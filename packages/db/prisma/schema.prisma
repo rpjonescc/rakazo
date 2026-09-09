@@ -412,6 +412,7 @@ model ChatGroup {
   userId     String
   name       String
   pinned     Boolean           @default(false)
+  description String           @default("")
   sectionId  String?
   section    BotSection?       @relation(fields: [sectionId], references: [id], onDelete: SetNull)
   archivedAt DateTime?

@@ -2197,7 +2197,7 @@ export function ShellPage() {
     if (text && id) void speaker.speak(text, { botId: id, messageId: message.id });
   }, []);
 
-  async function createGroup(input: { name: string; botIds: string[] }) {
+  async function createGroup(input: { name: string; description?: string; botIds: string[] }) {
     const group = await rpc.groups.create(input);
     setGroups((current) =>
       current.some((item) => item.id === group.id) ? current : [group, ...current],
@@ -2597,15 +2597,21 @@ export function ShellPage() {
                 key={`${activeSnapshot?.threadId}:slack`}
                 introduction={
                   activeGroup && activeSnapshot && !activeSnapshot.olderCursor ? (
-                    <div data-testid="slack-channel-intro" className="px-6 py-8">
-                      <div className="mb-4 text-3xl text-muted-foreground">#</div>
-                      <h2 className="text-xl font-semibold">{activeGroup.name}</h2>
+                    <div data-testid="slack-channel-intro" className="px-6 py-6">
+                      <h2 className="text-xl font-semibold break-words">
+                        <span className="me-2 text-muted-foreground" aria-hidden>
+                          #
+                        </span>
+                        {activeGroup.name}
+                      </h2>
                       <p className="mt-2 text-sm text-muted-foreground">
                         {(activeSnapshot.members ?? activeGroup.members)
                           .map((member) => member.name)
                           .join(", ") || t`No agents yet`}
                       </p>
-                      <p className="mt-2 text-sm text-muted-foreground">{t`Start the conversation.`}</p>
+                      <p className="mt-3 max-w-2xl whitespace-pre-wrap break-words text-sm leading-relaxed text-muted-foreground">
+                        {activeGroup.description || t`Start the conversation.`}
+                      </p>
                     </div>
                   ) : null
                 }
@@ -3558,6 +3564,7 @@ export function ShellPage() {
             {panel === "create-group" ? (
               <CreateGroupForm
                 bots={bots}
+                channel={presentationMode === "slack"}
                 onCancel={() => setPanel(null)}
                 onCreate={(input) => createGroup(input)}
               />
@@ -3565,8 +3572,10 @@ export function ShellPage() {
             {panel === "group-settings" && activeGroup ? (
               <GroupSettings
                 key={activeGroup.id}
+                channel={presentationMode === "slack"}
                 group={activeGroup}
                 bots={bots}
+                onCancel={() => setPanel(null)}
                 onSave={async (input) => {
                   const updated = await rpc.groups.update({ groupId: activeGroup.id, ...input });
                   setGroups((current) =>

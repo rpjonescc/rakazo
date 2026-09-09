@@ -1,6 +1,12 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { type Bot, GROUP_MEMBER_MAX, GROUP_MEMBER_MIN, type Group } from "@rakazo/contracts";
-import { BotAvatar, Button, Input } from "@rakazo/ui-web";
+import {
+  type Bot,
+  GROUP_DESCRIPTION_MAX_LENGTH,
+  GROUP_MEMBER_MAX,
+  GROUP_MEMBER_MIN,
+  type Group,
+} from "@rakazo/contracts";
+import { BotAvatar, Button, Input, Textarea } from "@rakazo/ui-web";
 import { Check, X } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 
@@ -16,6 +22,38 @@ function sameMembers(left: readonly string[], right: readonly string[]) {
   if (left.length !== right.length) return false;
   const rightIds = new Set(right);
   return left.every((id) => rightIds.has(id));
+}
+
+function DescriptionField({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+}) {
+  const id = useId();
+  return (
+    <div className="mt-5">
+      <label htmlFor={id} className="block text-sm text-muted-foreground">
+        <Trans>Description (optional)</Trans>
+      </label>
+      <Textarea
+        id={id}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+        maxLength={GROUP_DESCRIPTION_MAX_LENGTH}
+        rows={4}
+        aria-describedby={`${id}-help`}
+        className="mt-2 min-h-24 resize-y"
+      />
+      <p id={`${id}-help`} className="mt-2 text-xs leading-relaxed text-muted-foreground">
+        <Trans>Agents receive this context when they run in this channel, including threads.</Trans>
+      </p>
+    </div>
+  );
 }
 
 function MemberPicker({
@@ -69,14 +107,17 @@ export function CreateGroupForm({
   bots,
   onCancel,
   onCreate,
+  channel = false,
 }: {
   bots: Bot[];
   onCancel: () => void;
-  onCreate: (input: { name: string; botIds: string[] }) => Promise<void>;
+  onCreate: (input: { name: string; description?: string; botIds: string[] }) => Promise<void>;
+  channel?: boolean;
 }) {
   const { t } = useLingui();
   const nameId = useId();
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,7 +127,11 @@ export function CreateGroupForm({
     setSubmitting(true);
     setError(null);
     try {
-      await onCreate({ name: name.trim(), botIds: selected });
+      await onCreate({
+        name: name.trim(),
+        ...(description.trim() ? { description: description.trim() } : {}),
+        botIds: selected,
+      });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t`Could not create group`);
     } finally {
@@ -95,15 +140,16 @@ export function CreateGroupForm({
   }
 
   return (
-    <div>
+    <div data-testid="channel-create-form">
       <div className="mb-4 flex items-center justify-between">
-        <span className="text-[13.5px] text-muted-foreground">
-          <Trans>New group</Trans>
-        </span>
+        <h2 className="text-lg font-semibold text-foreground">
+          {channel ? <Trans>New channel</Trans> : <Trans>New group</Trans>}
+        </h2>
         <Button
           variant="ghost"
           size="icon-sm"
-          aria-label={t`Cancel new group`}
+          aria-label={channel ? t`Cancel new channel` : t`Cancel new group`}
+          disabled={submitting}
           onClick={onCancel}
           className="text-muted-foreground"
         >
@@ -121,10 +167,13 @@ export function CreateGroupForm({
           id={nameId}
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder={t`Name this group`}
+          placeholder={channel ? t`Name this channel` : t`Name this group`}
+          maxLength={80}
+          disabled={submitting}
           className="mt-2"
         />
       </label>
+      <DescriptionField value={description} onChange={setDescription} disabled={submitting} />
       <div className="mt-5 text-sm text-muted-foreground">
         <Trans>
           Agents (pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})
@@ -144,7 +193,13 @@ export function CreateGroupForm({
         disabled={submitting || !validSelection(name, selected)}
         onClick={() => void create()}
       >
-        {submitting ? <Trans>Creating…</Trans> : <Trans>Create group</Trans>}
+        {submitting ? (
+          <Trans>Creating…</Trans>
+        ) : channel ? (
+          <Trans>Create channel</Trans>
+        ) : (
+          <Trans>Create group</Trans>
+        )}
       </Button>
     </div>
   );
@@ -155,15 +210,20 @@ export function GroupSettings({
   bots,
   onSave,
   onRemove,
+  onCancel,
+  channel = false,
 }: {
   group: Group;
   bots: Bot[];
-  onSave: (input: { name?: string; botIds?: string[] }) => Promise<void>;
+  onSave: (input: { name?: string; description?: string; botIds?: string[] }) => Promise<void>;
+  channel?: boolean;
   onRemove: () => Promise<void>;
+  onCancel: () => void;
 }) {
   const { t } = useLingui();
   const nameId = useId();
   const [name, setName] = useState(group.name);
+  const [description, setDescription] = useState(group.description ?? "");
   const [selected, setSelected] = useState(group.members.map((member) => member.botId));
   const [pending, setPending] = useState<"save" | "remove" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -190,6 +250,8 @@ export function GroupSettings({
   function save() {
     return onSave({
       name: name.trim() !== group.name ? name.trim() : undefined,
+      description:
+        description.trim() !== (group.description ?? "") ? description.trim() : undefined,
       botIds: sameMembers(
         selected,
         group.members.map((member) => member.botId),
@@ -200,11 +262,21 @@ export function GroupSettings({
   }
 
   return (
-    <div>
+    <div data-testid="channel-settings-form">
       <div className="mb-4 flex items-center justify-between">
-        <span className="text-[13.5px] text-muted-foreground">
-          <Trans>Group settings</Trans>
-        </span>
+        <h2 className="text-lg font-semibold text-foreground">
+          {channel ? <Trans>Channel settings</Trans> : <Trans>Group settings</Trans>}
+        </h2>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={t`Cancel edits`}
+          onClick={onCancel}
+          disabled={pending !== null}
+          className="text-muted-foreground"
+        >
+          <X />
+        </Button>
       </div>
       {error ? (
         <p role="alert" className="mb-3 text-[13px] text-destructive">
@@ -220,6 +292,7 @@ export function GroupSettings({
           className="mt-2"
         />
       </label>
+      <DescriptionField value={description} onChange={setDescription} disabled={pending !== null} />
       <div className="mt-5 text-sm text-muted-foreground">
         <Trans>
           Agents ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})
@@ -247,7 +320,13 @@ export function GroupSettings({
         disabled={pending !== null}
         onClick={() => void mutate("remove", onRemove)}
       >
-        {pending === "remove" ? <Trans>Deleting…</Trans> : <Trans>Delete group</Trans>}
+        {pending === "remove" ? (
+          <Trans>Deleting…</Trans>
+        ) : channel ? (
+          <Trans>Delete channel</Trans>
+        ) : (
+          <Trans>Delete group</Trans>
+        )}
       </Button>
     </div>
   );

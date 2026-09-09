@@ -147,7 +147,10 @@ export function SlackWorkspace({
                 type="button"
                 aria-label="Create channel"
                 title="Create channel"
-                onClick={onCreateGroup}
+                onClick={() => {
+                  setMobileOpen(false);
+                  onCreateGroup();
+                }}
                 className="rounded p-0.5 text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
               >
                 <Plus size={14} strokeWidth={1.8} />
@@ -181,7 +184,10 @@ export function SlackWorkspace({
             ) : (
               <button
                 type="button"
-                onClick={onCreateGroup}
+                onClick={() => {
+                  setMobileOpen(false);
+                  onCreateGroup();
+                }}
                 className="w-full rounded-lg px-3 py-2 text-start text-[13px] text-muted-foreground hover:bg-sidebar-accent"
               >
                 Create your first channel

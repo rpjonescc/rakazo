@@ -1124,6 +1124,7 @@ export function createRouter(deps: RouterDeps) {
         const source = await groupRepos.getGroup(context.actor, input.groupId);
         return groupRepos.createGroup(context.actor, {
           name: duplicateBotName(source.name),
+          description: source.description,
           botIds: source.members.map((member) => member.bot.id),
         });
       }),

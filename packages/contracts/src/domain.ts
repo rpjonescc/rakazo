@@ -90,11 +90,14 @@ export type GroupMember = z.infer<typeof GroupMemberSchema>;
 /** Agent-count bounds. The authenticated human owner is included separately via ChatGroup.userId. */
 export const GROUP_MEMBER_MIN = 1;
 export const GROUP_MEMBER_MAX = 6;
+export const GROUP_DESCRIPTION_MAX_LENGTH = 4000;
+const GroupDescription = z.string().trim().max(GROUP_DESCRIPTION_MAX_LENGTH);
 
 export const GroupSchema = z.object({
   id: Id,
   spaceId: Id,
   name: z.string(),
+  description: z.string().optional(),
   pinned: z.boolean(),
   sectionId: Id.nullable(),
   archivedAt: z.string().nullable(),
@@ -115,12 +118,14 @@ const GroupBotIds = z
 
 export const CreateGroupInput = z.object({
   name: z.string().trim().min(1).max(80),
+  description: GroupDescription.optional(),
   botIds: GroupBotIds,
 });
 export type CreateGroupInput = z.infer<typeof CreateGroupInput>;
 
 export const UpdateGroupInput = z.object({
   groupId: Id,
+  description: GroupDescription.optional(),
   name: z.string().trim().min(1).max(80).optional(),
   botIds: GroupBotIds.optional(),
   pinned: z.boolean().optional(),

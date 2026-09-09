@@ -28,7 +28,7 @@ test("creator and one agent can create a channel and use it in Classic", async (
   await page.getByRole("button", { name: "Create channel", exact: true }).click();
   const panel = page.getByTestId("side-panel");
   await panel.locator("label:has-text('Name') input").fill("Day");
-  const create = panel.getByRole("button", { name: "Create group", exact: true });
+  const create = panel.getByRole("button", { name: "Create channel", exact: true });
   await expect(create).toBeDisabled();
   await panel.getByRole("button", { name: "Mylo", exact: true }).click();
   await expect(create).toBeEnabled();

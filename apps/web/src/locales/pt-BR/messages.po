@@ -3729,3 +3729,42 @@ msgstr "O seu nome"
 #: src/pages/Welcome.tsx:21
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "Sua equipe de agentes sempre ativos<0/>, a quem você pode dar trabalho de verdade."
+
+msgid "Description (optional)"
+msgstr "Description (optional)"
+
+msgid "Agents receive this context when they run in this channel, including threads."
+msgstr "Agents receive this context when they run in this channel, including threads."
+
+msgid "New channel"
+msgstr "New channel"
+
+msgid "Cancel new channel"
+msgstr "Cancel new channel"
+
+msgid "Name this channel"
+msgstr "Name this channel"
+
+msgid "Create channel"
+msgstr "Create channel"
+
+msgid "Channel settings"
+msgstr "Channel settings"
+
+msgid "Delete channel"
+msgstr "Delete channel"
+
+msgid "Start the conversation."
+msgstr "Start the conversation."
+
+msgid "Cancel edits"
+msgstr "Cancel edits"
+
+msgid "Agents (pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
+msgstr "Agents (pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
+
+msgid "Agents ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
+msgstr "Agents ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
+
+msgid "You (included)"
+msgstr "You (included)"
