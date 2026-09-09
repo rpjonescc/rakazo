@@ -28,7 +28,7 @@ test("focus choice suggests apps and preserves a completed connection", async ({
   // user chose during creation ("Chief") is preserved.
   await expect(page.locator("main").getByText("Chief", { exact: true })).toBeVisible();
   await expect(page.getByPlaceholder("Message Chief")).toBeVisible();
-  await expect(page.getByText("Slack", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("transcript").getByText("Slack", { exact: true })).toBeVisible();
   await expect(page.getByText("Gmail", { exact: true })).toBeVisible();
   const connectionCards = page.getByRole("group", { name: / connection$/ });
   await expect(connectionCards).toHaveCount(3);

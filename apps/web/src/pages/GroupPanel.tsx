@@ -127,9 +127,12 @@ export function CreateGroupForm({
       </label>
       <div className="mt-5 text-sm text-muted-foreground">
         <Trans>
-          Members (pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})
+          Agents (pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})
         </Trans>
       </div>
+      <p className="mt-2 text-sm text-muted-foreground">
+        <Trans>You (included)</Trans>
+      </p>
       <MemberPicker
         bots={bots}
         selected={selected}
@@ -219,9 +222,12 @@ export function GroupSettings({
       </label>
       <div className="mt-5 text-sm text-muted-foreground">
         <Trans>
-          Members ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})
+          Agents ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})
         </Trans>
       </div>
+      <p className="mt-2 text-sm text-muted-foreground">
+        <Trans>You (included)</Trans>
+      </p>
       <MemberPicker
         bots={bots}
         selected={selected}

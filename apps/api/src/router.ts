@@ -169,7 +169,9 @@ import {
   isPeerRun,
   loadAllMessages,
   loadMessagePage,
+  loadReplyPage,
   shouldForwardPeerThreadEvent,
+  THREAD_REPLY_PAGE_SIZE,
 } from "./thread-message-pages.js";
 import {
   reactToThreadMessage,
@@ -1233,6 +1235,27 @@ export function createRouter(deps: RouterDeps) {
           input.includePeerRuns,
           input.includePeerReceipts,
         );
+      }),
+      replies: authed.threads.replies.handler(async ({ context, input }) => {
+        try {
+          const target = await resolveThreadTarget(deps.prisma, context.actor, input);
+          return await loadReplyPage(
+            deps.prisma,
+            target.threadId,
+            input.rootMessageId,
+            input.before,
+            input.limit ?? THREAD_REPLY_PAGE_SIZE,
+            input.includePeerRuns,
+          );
+        } catch (error) {
+          if (
+            error instanceof IsolationError ||
+            (error instanceof Error && error.name === "IsolationError")
+          ) {
+            throw new ORPCError("NOT_FOUND");
+          }
+          throw error;
+        }
       }),
       subscribe: authed.threads.subscribe.handler(async function* ({ context, input }) {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);

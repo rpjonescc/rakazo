@@ -2106,15 +2106,26 @@ describeJourneys("required product journeys", () => {
       ]),
       thread: archiveThread,
     });
+    const groupsWithOneAgent = await rpc<Array<{ id: string }>>(app, ada, "groups/list");
+    expect(groupsWithOneAgent.some((row) => row.id === archiveGroup.id)).toBe(true);
+    const singleAgentSend = await rpc<{ runId: string }>(app, ada, "threads/send", {
+      groupId: archiveGroup.id,
+      text: "The creator and one active agent can keep chatting",
+    });
+    await expect
+      .poll(() => prisma.run.findUnique({ where: { id: singleAgentSend.runId } }))
+      .toMatchObject({ status: "completed", botId: archivePartner.id });
+    await rpc(app, ada, "bots/archive", { botId: archivePartner.id });
     const groupsWhileUndersized = await rpc<Array<{ id: string }>>(app, ada, "groups/list");
     expect(groupsWhileUndersized.some((row) => row.id === archiveGroup.id)).toBe(false);
     await expect(rpc(app, ada, "threads/get", { groupId: archiveGroup.id })).rejects.toThrow();
     await expect(
       rpc(app, ada, "threads/send", {
         groupId: archiveGroup.id,
-        text: "This hidden group must not run with one active member",
+        text: "This hidden group must not run with zero active agents",
       }),
     ).rejects.toThrow();
+    await rpc(app, ada, "bots/restore", { botId: archivePartner.id });
     await rpc(app, ada, "bots/restore", { botId: archiveMember.id });
     const restoredArchiveGroup = await rpc<
       Array<{ id: string; members: Array<{ botId: string }> }>
@@ -2159,9 +2170,14 @@ describeJourneys("required product journeys", () => {
       },
     });
     await rpc(app, ada, "bots/remove", { botId: archiveThird.id, deleteMemories: true });
-    expect(await prisma.chatGroup.findUnique({ where: { id: archiveGroup.id } })).toBeNull();
-    expect(await prisma.run.findUnique({ where: { id: dissolvingRun.id } })).toBeNull();
+    expect(await prisma.chatGroup.findUnique({ where: { id: archiveGroup.id } })).not.toBeNull();
+    expect(await prisma.run.findUnique({ where: { id: dissolvingRun.id } })).toMatchObject({
+      status: "running",
+    });
+    await rpc(app, ada, "threads/stop", { groupId: archiveGroup.id });
     await rpc(app, ada, "bots/restore", { botId: archiveMember.id });
+    expect(await prisma.chatGroup.findUnique({ where: { id: archiveGroup.id } })).not.toBeNull();
+    await rpc(app, ada, "groups/remove", { groupId: archiveGroup.id });
     expect(await prisma.chatGroup.findUnique({ where: { id: archiveGroup.id } })).toBeNull();
 
     const deletionPartner = await rpc<Bot>(app, ada, "bots/create", {
@@ -2178,6 +2194,8 @@ describeJourneys("required product journeys", () => {
     await expect(prisma.bot.delete({ where: { id: botB.id } })).rejects.toThrow();
     expect(await prisma.chatGroup.findUnique({ where: { id: deletionGroup.id } })).not.toBeNull();
     await rpc(app, ada, "bots/remove", { botId: botB.id, deleteMemories: true });
+    expect(await prisma.chatGroup.findUnique({ where: { id: deletionGroup.id } })).not.toBeNull();
+    await rpc(app, ada, "bots/remove", { botId: deletionPartner.id, deleteMemories: true });
     expect(await prisma.chatGroup.findUnique({ where: { id: deletionGroup.id } })).toBeNull();
 
     await rpc(app, ada, "groups/remove", { groupId: group.id });
@@ -2186,7 +2204,7 @@ describeJourneys("required product journeys", () => {
     expect(remainingBotIds).toEqual(
       expect.arrayContaining([
         ...remainingGroupBotIds,
-        deletionPartner.id,
+
         archiveMember.id,
         archivePartner.id,
       ]),

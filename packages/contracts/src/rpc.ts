@@ -61,6 +61,7 @@ import {
   TaughtSkillSchema,
   TeachRecordingEventSchema,
   ThreadMessagePageSchema,
+  ThreadReplyPageSchema,
   ThreadSnapshotSchema,
   UpdateAgentSkillInput,
   UpdateBotInput,
@@ -118,6 +119,7 @@ const threadSendInput = threadTarget
       .max(64)
       .optional(),
     replyToMessageId: Id.optional(),
+    replyInThread: z.boolean().optional(),
     clientNonce: z.string().min(1).max(200).optional(),
   })
   .superRefine((input, ctx) => {
@@ -271,6 +273,16 @@ export const appContract = {
         }),
       )
       .output(ThreadMessagePageSchema),
+    replies: oc
+      .input(
+        threadTarget.safeExtend({
+          rootMessageId: Id,
+          before: z.number().int().nonnegative().optional(),
+          includePeerRuns: z.boolean().optional(),
+          limit: z.number().int().min(1).max(100).optional(),
+        }),
+      )
+      .output(ThreadReplyPageSchema),
     subscribe: oc
       .input(threadTarget.safeExtend({ cursor: z.number().int().min(-1) }))
       .output(eventIterator(ProductEventSchema)),

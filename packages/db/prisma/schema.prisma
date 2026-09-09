@@ -478,6 +478,9 @@ model Message {
   replyToMessageId String?
   replyTo          Message?  @relation("MessageReplies", fields: [replyToMessageId], references: [id], onDelete: SetNull)
   replies          Message[] @relation("MessageReplies")
+  threadRootMessageId String?
+  threadRootMessage   Message?  @relation("MessageThreadRoots", fields: [threadRootMessageId], references: [id], onDelete: SetNull)
+  threadReplies       Message[] @relation("MessageThreadRoots")
   runId            String?
   clientNonce      String?
   thumbsUp         Boolean   @default(false)
@@ -490,6 +493,7 @@ model Message {
   @@unique([threadId, clientNonce])
   @@index([threadId, seq])
   @@index([replyToMessageId])
+  @@index([threadId, threadRootMessageId, seq])
   @@map("messages")
 }
 

@@ -1182,6 +1182,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const discoveredPromise = deps.connector
           ? deps.connector.discoverTools(context)
           : Promise.resolve([]);
+        const branchRootId = messages.find(
+          (message) => message.id === run.sourceMessageId,
+        )?.threadRootMessageId;
         const threadContext = threadContextForRun(
           run.trigger,
           {
@@ -1192,12 +1195,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 | "user"
                 | "assistant"
                 | "system",
-              content: blocksToAgentHistoryText(m.blocks as MessageBlock[]),
+              content: `${m.id === branchRootId ? "[Selected thread root]\n" : ""}${blocksToAgentHistoryText(m.blocks as MessageBlock[])}`,
             })),
             summary: thread.historyCompactionSummary,
             historyCompactedUpToSeq: thread.historyCompactedUpToSeq,
           },
           messagingChannelRun,
+          Boolean(branchRootId),
         );
         const compactedHistory = selectCompactedHistory({
           messages: threadContext.messages,
@@ -1275,8 +1279,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
         }
         if (!compactedHistory.usedLocalSummary) {
-          history = history.slice(
-            -historyWindowSize({
+          history = selectRunHistoryWindow(
+            history,
+            branchRootId,
+            historyWindowSize({
               semanticMemoryEnabled: semanticMemoryEnabled && !thread.historyCompactionSummary,
               compacted: thread.historyCompactedUpToSeq != null,
               recallSucceeded,
@@ -4091,6 +4097,16 @@ export function filterPageBrowserTools<T extends { name: string }>(
   return tools.filter((tool) => !PAGE_BROWSER_TOOL_NAMES.has(tool.name));
 }
 
+export function selectRunHistoryWindow<T>(
+  history: T[],
+  branchRootId: string | null | undefined,
+  size: number,
+): T[] {
+  // Branch history is already bounded by the loader, with its root explicitly added.
+  // A second slice here would drop that old root at the window boundary.
+  return branchRootId ? history : history.slice(-size);
+}
+
 export function threadContextForRun<T>(
   trigger: string,
   context: {
@@ -4099,6 +4115,7 @@ export function threadContextForRun<T>(
     historyCompactedUpToSeq: number | null;
   },
   messagingChannelRun: boolean,
+  replyBranch = false,
 ) {
   return trigger === "routine"
     ? {
@@ -4107,7 +4124,7 @@ export function threadContextForRun<T>(
         historyCompactedUpToSeq: null,
         includeSemanticRecall: false,
       }
-    : messagingChannelRun
+    : messagingChannelRun || replyBranch
       ? { ...context, summary: null, historyCompactedUpToSeq: null, includeSemanticRecall: false }
       : { ...context, includeSemanticRecall: true };
 }

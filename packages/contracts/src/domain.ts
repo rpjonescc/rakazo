@@ -87,7 +87,8 @@ export const GroupMemberSchema = z.object({
 });
 export type GroupMember = z.infer<typeof GroupMemberSchema>;
 
-export const GROUP_MEMBER_MIN = 2;
+/** Agent-count bounds. The authenticated human owner is included separately via ChatGroup.userId. */
+export const GROUP_MEMBER_MIN = 1;
 export const GROUP_MEMBER_MAX = 6;
 
 export const GroupSchema = z.object({
@@ -840,6 +841,15 @@ export const ThreadMessagePageSchema = z.object({
   olderCursor: z.number().int().nonnegative().nullable(),
 });
 export type ThreadMessagePage = z.infer<typeof ThreadMessagePageSchema>;
+
+export const ThreadReplyPageSchema = z.object({
+  threadId: Id,
+  rootMessage: ThreadMessageSchema,
+  messages: z.array(ThreadMessageSchema),
+  olderCursor: z.number().int().nonnegative().nullable(),
+  replyCount: z.number().int().nonnegative(),
+});
+export type ThreadReplyPage = z.infer<typeof ThreadReplyPageSchema>;
 
 export const ThreadSnapshotSchema = z.object({
   threadId: Id,

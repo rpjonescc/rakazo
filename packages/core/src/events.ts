@@ -22,6 +22,7 @@ export function projectMessages(
       seq: number;
       botId?: string;
       runId?: string;
+      threadRootMessageId?: string;
       createdAt: string;
     };
   };
@@ -40,6 +41,10 @@ export function projectMessages(
         seq: event.seq,
         botId: event.botId ?? undefined,
         runId: event.runId ?? undefined,
+        threadRootMessageId:
+          typeof asRecord(event.payload).threadRootMessageId === "string"
+            ? (asRecord(event.payload).threadRootMessageId as string)
+            : undefined,
         createdAt,
       },
     };
@@ -72,6 +77,10 @@ export function projectMessages(
         blocks,
         botId: event.botId ?? undefined,
         runId: event.runId ?? undefined,
+        threadRootMessageId:
+          typeof asRecord(event.payload).threadRootMessageId === "string"
+            ? (asRecord(event.payload).threadRootMessageId as string)
+            : undefined,
         createdAt,
       });
       continue;
@@ -129,6 +138,10 @@ export function projectMessages(
         blocks: [block],
         botId: event.botId ?? undefined,
         runId: event.runId ?? undefined,
+        threadRootMessageId:
+          typeof asRecord(event.payload).threadRootMessageId === "string"
+            ? (asRecord(event.payload).threadRootMessageId as string)
+            : undefined,
         createdAt,
       });
       continue;
@@ -152,6 +165,7 @@ export function projectMessages(
         blocks: live.blocks,
         botId: live.meta.botId,
         runId: live.meta.runId,
+        threadRootMessageId: live.meta.threadRootMessageId,
         createdAt: live.meta.createdAt,
       });
     }

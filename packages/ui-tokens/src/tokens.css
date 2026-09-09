@@ -74,3 +74,77 @@
   --scrollbar-hover: #a8a8a4;
   --radius: 0.75rem;
 }
+
+[data-theme="dark"] [data-chat-view="slack"] {
+  color-scheme: dark;
+  --background: #242628;
+  --foreground: #ececee;
+  --card: #2b2d30;
+  --card-foreground: #ececee;
+  --popover: #141416;
+  --popover-foreground: #ececee;
+  --primary: #f1f1ef;
+  --primary-foreground: #1a1a1a;
+  --secondary: #1a1a1d;
+  --secondary-foreground: #ececee;
+  --chat-user: #2b2b31;
+  --chat-user-foreground: #ececee;
+  --muted: #2b2d30;
+  --muted-foreground: #aaaeb3;
+  --accent: #333639;
+  --accent-foreground: #ececee;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #3b3e42;
+  --input: #3b3e42;
+  --ring: #a6a6ad;
+  --sidebar: #202224;
+  --sidebar-foreground: #ececee;
+  --sidebar-border: #36393d;
+  --sidebar-accent: #303336;
+  --sidebar-accent-foreground: #ececee;
+  --link: #86b7ff;
+  --success: #4ecb71;
+  --warning: #e9c46a;
+  --overlay: rgba(4, 4, 5, 0.62);
+  --scrollbar: #2a2a2e;
+  --scrollbar-hover: #414147;
+  --radius: 0.75rem;
+}
+
+[data-theme="light"] [data-chat-view="slack"] {
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #1a1a1a;
+  --card: #ffffff;
+  --card-foreground: #1a1a1a;
+  --popover: #ffffff;
+  --popover-foreground: #1a1a1a;
+  --primary: #1a1a1a;
+  --primary-foreground: #f1f1ef;
+  --secondary: #f0f0ed;
+  --secondary-foreground: #1a1a1a;
+  --chat-user: #e2e2dc;
+  --chat-user-foreground: #1a1a1a;
+  --muted: #f0f0ed;
+  --muted-foreground: #6c6c70;
+  --accent: #eaeae6;
+  --accent-foreground: #1a1a1a;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #dedfe1;
+  --input: #eaeae6;
+  --ring: #6c6c70;
+  --sidebar: #f5f5f5;
+  --sidebar-foreground: #1a1a1a;
+  --sidebar-border: #e3e4e5;
+  --sidebar-accent: #e8e8e8;
+  --sidebar-accent-foreground: #1a1a1a;
+  --link: #2563eb;
+  --success: #228b3b;
+  --warning: #b7791f;
+  --overlay: rgba(20, 20, 22, 0.45);
+  --scrollbar: #c8c8c4;
+  --scrollbar-hover: #a8a8a4;
+  --radius: 0.75rem;
+}

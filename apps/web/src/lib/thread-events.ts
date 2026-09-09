@@ -416,6 +416,10 @@ export function reduceThreadSnapshot(
       blocks,
       botId: event.botId,
       runId: event.runId,
+      threadRootMessageId:
+        typeof event.payload.threadRootMessageId === "string"
+          ? event.payload.threadRootMessageId
+          : undefined,
       createdAt: event.createdAt,
     };
     return { ...prev, cursor: event.seq, messages: [...remaining, streaming] };
@@ -435,6 +439,10 @@ export function reduceThreadSnapshot(
       blocks,
       botId: event.botId,
       runId: event.runId,
+      threadRootMessageId:
+        typeof event.payload.threadRootMessageId === "string"
+          ? event.payload.threadRootMessageId
+          : undefined,
       createdAt: event.createdAt,
     };
     return { ...prev, cursor: event.seq, messages: [...remaining, next] };
@@ -452,6 +460,10 @@ export function reduceThreadSnapshot(
       blocks: [block],
       botId: event.botId,
       runId: event.runId,
+      threadRootMessageId:
+        typeof event.payload.threadRootMessageId === "string"
+          ? event.payload.threadRootMessageId
+          : undefined,
       createdAt: event.createdAt,
     };
     const without: ThreadMessage[] = [];
@@ -491,6 +503,16 @@ export function reduceThreadSnapshot(
       role,
       blocks,
       botId: event.botId,
+      replyToMessageId:
+        typeof event.payload.replyToMessageId === "string"
+          ? event.payload.replyToMessageId
+          : undefined,
+      threadRootMessageId:
+        typeof event.payload.threadRootMessageId === "string"
+          ? event.payload.threadRootMessageId
+          : undefined,
+      replyCount:
+        typeof event.payload.replyCount === "number" ? event.payload.replyCount : undefined,
       runId: event.runId,
       thumbsUp: event.payload.thumbsUp === true,
       createdAt: event.createdAt,
@@ -501,7 +523,16 @@ export function reduceThreadSnapshot(
     const liveId = progressMessageId(event);
     const { remaining } = takeLiveMessage(prev.messages, liveId);
     const without = remaining.filter((message) => !replacedSubagent(message, replacedSubagentIds));
-    return { ...prev, cursor: event.seq, messages: upsertMessageById(without, next) };
+    const alreadyPresent = without.some((message) => message.id === next.id);
+    const withReplyCount =
+      !alreadyPresent && next.threadRootMessageId
+        ? without.map((message) =>
+            message.id === next.threadRootMessageId
+              ? { ...message, replyCount: (message.replyCount ?? 0) + 1 }
+              : message,
+          )
+        : without;
+    return { ...prev, cursor: event.seq, messages: upsertMessageById(withReplyCount, next) };
   }
   return prev;
 }

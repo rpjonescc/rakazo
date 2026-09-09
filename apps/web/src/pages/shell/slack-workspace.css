@@ -1,0 +1,85 @@
+/* Presentation only: the shared composer still owns send, attachments and voice. */
+[data-chat-view="slack"] [data-composer-variant="slack"] {
+  padding: 12px 20px 20px;
+}
+[data-chat-view="slack"] [data-testid="composer-bar"] {
+  flex-wrap: wrap;
+  gap: 8px;
+  border-radius: 9px;
+  padding: 12px;
+  background: var(--card);
+}
+[data-chat-view="slack"] [data-testid="composer-bar"]:focus-within {
+  border-color: var(--ring);
+}
+[data-chat-view="slack"] [data-testid="composer-bar"] > div {
+  order: -1;
+  flex-basis: 100%;
+  min-height: 56px;
+  align-items: flex-start;
+}
+[data-chat-view="slack"] [data-testid="composer-bar"] textarea {
+  min-height: 56px;
+  font-size: 14px;
+}
+[data-chat-view="slack"] [data-testid="composer-bar"] > button {
+  border-radius: 6px;
+  box-shadow: none;
+}
+[data-chat-view="slack"] [data-testid="composer-bar"] > button:nth-of-type(2) {
+  margin-inline-start: auto;
+}
+[data-chat-view="slack"] [data-testid="composer-bar"] > button:first-of-type,
+[data-chat-view="slack"] [data-testid="composer-bar"] > button[aria-label="Voice"] {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+[data-chat-view="slack"] [data-testid="slack-thread-panel"] {
+  background: var(--card);
+}
+[data-chat-view="slack"] [data-testid="slack-sidebar"] > div:first-child {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
+}
+[data-chat-view="slack"] [data-testid="slack-sidebar"] > div:first-child > div:first-child {
+  flex: 1 0 100%;
+}
+[data-chat-view="slack"] aside[aria-label="Workspace"] {
+  width: 44px;
+  background: var(--sidebar);
+}
+[data-chat-view="slack"] [aria-current="page"] {
+  box-shadow: inset 2px 0 var(--foreground);
+}
+[data-chat-view="slack"] .slack-message-actions [data-testid="message-hover-rail"] {
+  inset-inline-start: auto;
+  inset-inline-end: 0;
+  top: -4px;
+  transform: none;
+  translate: none;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+}
+@media (hover: hover) and (pointer: fine) {
+  [data-chat-view="slack"] .slack-reply-action {
+    opacity: 0;
+  }
+  [data-chat-view="slack"] [data-message-id]:hover .slack-reply-action,
+  [data-chat-view="slack"] [data-message-id]:focus-within .slack-reply-action {
+    opacity: 1;
+  }
+}
+@media (hover: none), (pointer: coarse) {
+  [data-chat-view="slack"] [data-testid="message-bubble-frame"] {
+    padding-inline-end: 46px;
+  }
+}
+@media (max-width: 767px) {
+  [data-chat-view="slack"] [data-composer-variant="slack"] {
+    padding: 8px 12px 12px;
+  }
+}

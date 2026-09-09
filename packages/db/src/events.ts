@@ -1147,8 +1147,49 @@ export async function appendEventInTransaction(
     select: { nextEventSeq: true },
   });
   await assertRunCanWriteHistory(tx, input.runId);
+  let payload = input.payload;
+  const messageId = typeof payload.messageId === "string" ? payload.messageId : undefined;
+  const messageDelegate = tx.message as unknown as {
+    findFirst?: (args: {
+      where: { id: string; threadId: string };
+      select: { replyToMessageId: true; threadRootMessageId: true };
+    }) => Promise<{
+      replyToMessageId: string | null;
+      threadRootMessageId: string | null;
+    } | null>;
+  };
+  if (messageId && typeof messageDelegate.findFirst === "function") {
+    const message = await messageDelegate.findFirst({
+      where: { id: messageId, threadId: input.threadId },
+      select: { replyToMessageId: true, threadRootMessageId: true },
+    });
+    if (message?.replyToMessageId || message?.threadRootMessageId) {
+      payload = {
+        ...payload,
+        ...(message.replyToMessageId ? { replyToMessageId: message.replyToMessageId } : {}),
+        ...(message.threadRootMessageId
+          ? { threadRootMessageId: message.threadRootMessageId }
+          : {}),
+      };
+    }
+  }
+  if (!messageId && input.runId) {
+    const run = await tx.run.findUnique({
+      where: { id: input.runId },
+      select: { threadId: true, sourceMessageId: true },
+    });
+    const source =
+      run?.threadId === input.threadId && run.sourceMessageId
+        ? await tx.message.findFirst({
+            where: { id: run.sourceMessageId, threadId: input.threadId },
+            select: { threadRootMessageId: true },
+          })
+        : null;
+    const { threadRootMessageId: _untrustedRoot, ...rest } = payload;
+    payload = source ? { ...rest, threadRootMessageId: source.threadRootMessageId } : rest;
+  }
   // Unpaired UTF-16 surrogates (e.g. a split emoji high half) are invalid JSON for Postgres.
-  const payload = sanitizeJsonValue(input.payload);
+  const sanitizedPayload = sanitizeJsonValue(payload);
   return tx.event.create({
     data: {
       spaceId: input.spaceId,
@@ -1156,7 +1197,7 @@ export async function appendEventInTransaction(
       botId: input.botId,
       seq: thread.nextEventSeq - 1,
       type: input.type,
-      payload: payload as Prisma.InputJsonValue,
+      payload: sanitizedPayload as Prisma.InputJsonValue,
       runId: input.runId,
     },
   });

@@ -1,6 +1,13 @@
-import type { MessageBlock, ThreadMessage, ThreadMessagePage } from "@rakazo/contracts";
+import type {
+  MessageBlock,
+  ThreadMessage,
+  ThreadMessagePage,
+  ThreadReplyPage,
+} from "@rakazo/contracts";
 import { isPeerReceiptBlocks } from "@rakazo/core";
-import type { Prisma, PrismaClient } from "@rakazo/db";
+import { IsolationError, type Prisma, type PrismaClient } from "@rakazo/db";
+
+export const THREAD_REPLY_PAGE_SIZE = 50;
 
 type MessageDb = PrismaClient | Prisma.TransactionClient;
 
@@ -41,7 +48,7 @@ export async function loadMessagePage(
       const messages = includePeerRuns ? rows : await withoutPeerRunMessages(prisma, rows);
       return {
         threadId,
-        messages: messages.map(toThreadMessage),
+        messages: (await attachReplyCounts(prisma, messages)).map(toThreadMessage),
         olderCursor: hasOlder ? (first?.seq ?? null) : null,
       };
     }
@@ -68,7 +75,7 @@ export async function loadMessagePage(
     if (hasSubstantive || includePeerReceipts || !hasOlder || includePeerRuns) {
       return {
         threadId,
-        messages: visibleRows.map(toThreadMessage),
+        messages: (await attachReplyCounts(prisma, visibleRows)).map(toThreadMessage),
         olderCursor: hasOlder ? (pageRows[0]?.seq ?? null) : null,
       };
     }
@@ -76,6 +83,75 @@ export async function loadMessagePage(
     // long peer-only histories make this path hot.
     cursor = pageRows[0]?.seq;
   }
+}
+
+async function attachReplyCounts<
+  T extends { id: string; threadId: string; threadRootMessageId: string | null },
+>(prisma: MessageDb, rows: T[]): Promise<Array<T & { replyCount: number }>> {
+  if (rows.length === 0) return [];
+  const counts = await prisma.message.groupBy({
+    by: ["threadRootMessageId"],
+    where: {
+      threadId: rows[0]!.threadId,
+      threadRootMessageId: { in: rows.map((row) => row.id) },
+    },
+    _count: { _all: true },
+  });
+  const countByRoot = new Map(
+    counts.flatMap((row) =>
+      row.threadRootMessageId ? [[row.threadRootMessageId, row._count._all] as const] : [],
+    ),
+  );
+  return rows.map((row) => ({ ...row, replyCount: countByRoot.get(row.id) ?? 0 }));
+}
+
+export async function loadReplyPage(
+  prisma: MessageDb,
+  threadId: string,
+  rootMessageId: string,
+  before: number | undefined,
+  pageSize = THREAD_REPLY_PAGE_SIZE,
+  includePeerRuns = false,
+): Promise<ThreadReplyPage> {
+  const selected = await prisma.message.findFirst({
+    where: { id: rootMessageId, threadId },
+  });
+  if (!selected) throw new IsolationError();
+
+  const normalizedRootId = selected.threadRootMessageId ?? selected.id;
+  const root =
+    normalizedRootId === selected.id
+      ? selected
+      : await prisma.message.findFirst({
+          where: { id: normalizedRootId, threadId },
+        });
+  if (!root) throw new IsolationError();
+
+  const replyCount = await prisma.message.count({
+    where: { threadId, threadRootMessageId: normalizedRootId },
+  });
+  const rows = await prisma.message.findMany({
+    where: {
+      threadId,
+      threadRootMessageId: normalizedRootId,
+      ...(before === undefined ? {} : { seq: { lt: before } }),
+    },
+    orderBy: { seq: "desc" },
+    take: pageSize + 1,
+  });
+  const hasOlder = rows.length > pageSize;
+  const pageRows = rows.slice(0, pageSize).reverse();
+  const visibleRows = includePeerRuns ? pageRows : await withoutPeerRunMessages(prisma, pageRows);
+  const [rootWithCount] = await attachReplyCounts(prisma, [root]);
+  const repliesWithCounts = await attachReplyCounts(prisma, visibleRows);
+
+  return {
+    threadId,
+    rootMessage: toThreadMessage(rootWithCount!),
+    messages: repliesWithCounts.map(toThreadMessage),
+    olderCursor: hasOlder ? (pageRows[0]?.seq ?? null) : null,
+    replyCount,
+  };
 }
 
 export async function loadAllMessages(
@@ -175,9 +251,11 @@ function toThreadMessage(row: {
   blocks: Prisma.JsonValue;
   botId: string | null;
   replyToMessageId: string | null;
+  threadRootMessageId: string | null;
   runId: string | null;
   thumbsUp: boolean;
   createdAt: Date;
+  replyCount?: number;
 }): ThreadMessage {
   return {
     id: row.id,
@@ -187,6 +265,8 @@ function toThreadMessage(row: {
     blocks: row.blocks as ThreadMessage["blocks"],
     botId: row.botId ?? undefined,
     replyToMessageId: row.replyToMessageId ?? undefined,
+    threadRootMessageId: row.threadRootMessageId ?? undefined,
+    replyCount: row.replyCount,
     runId: row.runId ?? undefined,
     thumbsUp: row.thumbsUp,
     createdAt: row.createdAt.toISOString(),

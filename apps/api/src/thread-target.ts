@@ -585,6 +585,7 @@ export async function sendThreadMessage(
     artifactIds?: string[];
     mentions?: MentionTargetInput[];
     replyToMessageId?: string;
+    replyInThread?: boolean;
     clientNonce?: string;
   },
 ) {
@@ -593,12 +594,15 @@ export async function sendThreadMessage(
 
   const commit = () =>
     deps.prisma.$transaction(async (tx) => {
+      let threadRootMessageId: string | undefined;
+      if (input.replyInThread && !input.replyToMessageId) throw new ORPCError("BAD_REQUEST");
       if (input.replyToMessageId) {
         const reply = await tx.message.findFirst({
           where: { id: input.replyToMessageId, threadId: target.threadId },
-          select: { id: true },
+          select: { id: true, threadRootMessageId: true },
         });
-        if (!reply) throw new IsolationError();
+        if (!reply) throw new ORPCError("NOT_FOUND");
+        if (input.replyInThread) threadRootMessageId = reply.threadRootMessageId ?? reply.id;
       }
 
       if (target.kind === "bot") {
@@ -620,6 +624,7 @@ export async function sendThreadMessage(
           role: "user",
           blocks,
           replyToMessageId: input.replyToMessageId,
+          threadRootMessageId,
           clientNonce: input.clientNonce,
         });
         const activeRuns = await tx.run.findMany({
@@ -628,8 +633,23 @@ export async function sendThreadMessage(
             botId: target.botId,
             status: { in: [...ACTIVE_RUN_STATUSES] },
           },
-          select: { id: true, taskId: true, status: true },
+          select: {
+            id: true,
+            taskId: true,
+            status: true,
+            sourceMessage: { select: { threadRootMessageId: true } },
+          },
         });
+        if (
+          activeRuns.some(
+            (run) =>
+              (run.sourceMessage?.threadRootMessageId ?? null) !== (threadRootMessageId ?? null),
+          )
+        ) {
+          throw new ORPCError("CONFLICT", {
+            message: "Wait for the bot to finish its current thread.",
+          });
+        }
         if (activeRuns.some((run) => !STEERABLE_RUN_STATUSES.has(run.status))) {
           throw new ORPCError("CONFLICT", {
             message: "Answer the pending ask first.",
@@ -733,6 +753,7 @@ export async function sendThreadMessage(
         role: "user",
         blocks,
         replyToMessageId: input.replyToMessageId,
+        threadRootMessageId,
         clientNonce: input.clientNonce,
       });
       const activeRuns = await tx.run.findMany({
@@ -741,8 +762,24 @@ export async function sendThreadMessage(
           botId: { in: targetBotIds },
           status: { in: [...ACTIVE_RUN_STATUSES] },
         },
-        select: { id: true, taskId: true, botId: true, status: true },
+        select: {
+          id: true,
+          taskId: true,
+          botId: true,
+          status: true,
+          sourceMessage: { select: { threadRootMessageId: true } },
+        },
       });
+      if (
+        activeRuns.some(
+          (run) =>
+            (run.sourceMessage?.threadRootMessageId ?? null) !== (threadRootMessageId ?? null),
+        )
+      ) {
+        throw new ORPCError("CONFLICT", {
+          message: "Wait for the bot to finish its current thread.",
+        });
+      }
       const activeByBotId = new Map<string, (typeof activeRuns)[number]>();
       for (const run of activeRuns) {
         if (!STEERABLE_RUN_STATUSES.has(run.status)) {
