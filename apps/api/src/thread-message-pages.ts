@@ -7,6 +7,8 @@ import type {
 import { isPeerReceiptBlocks } from "@rakazo/core";
 import { IsolationError, type Prisma, type PrismaClient, summarizeThreadRoots } from "@rakazo/db";
 
+import { loadThreadRecipientBotIds } from "./thread-recipients.js";
+
 export const THREAD_REPLY_PAGE_SIZE = 50;
 
 type MessageDb = PrismaClient | Prisma.TransactionClient;
@@ -158,6 +160,7 @@ export async function loadReplyPage(
     olderCursor: hasOlder ? (pageRows[0]?.seq ?? null) : null,
     replyCount,
     rootSummary,
+    recipientBotIds: await loadThreadRecipientBotIds(prisma, threadId, normalizedRootId),
   };
 }
 

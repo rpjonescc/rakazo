@@ -18,6 +18,7 @@ const featureFiles = ["src/pages/Shell.tsx", "src/pages/shell/SlackWorkspace.tsx
 const featureMessages = [
   "Start a conversation",
   "Reply in thread",
+  "Continuing with {0}",
   "Start the conversation.",
   "No agents yet",
   "Back to original message",

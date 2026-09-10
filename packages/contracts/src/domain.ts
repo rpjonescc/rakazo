@@ -885,6 +885,7 @@ export const ThreadReplyPageSchema = z.object({
   olderCursor: z.number().int().nonnegative().nullable(),
   replyCount: z.number().int().nonnegative(),
   rootSummary: ThreadRootSummarySchema.optional(),
+  recipientBotIds: z.array(Id).optional(),
 });
 export type ThreadReplyPage = z.infer<typeof ThreadReplyPageSchema>;
 

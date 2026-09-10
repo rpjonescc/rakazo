@@ -3870,3 +3870,7 @@ msgstr "Back to channel"
 #: src/pages/shell/SlackWorkspace.tsx:436
 msgid "Back to direct message"
 msgstr "Back to direct message"
+
+#: src/pages/Shell.tsx
+msgid "Continuing with {0}"
+msgstr "Continuing with {0}"

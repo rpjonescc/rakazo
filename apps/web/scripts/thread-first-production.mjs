@@ -164,6 +164,7 @@ try {
               threadId: bot.threadId,
               rootMessage,
               rootSummary: summary,
+              recipientBotIds: [bot.id],
               messages: [],
               replyCount: 2,
               olderCursor: null,
@@ -217,8 +218,12 @@ try {
         await page.getByTestId(`slack-thread-${rootMessage.id}`).click();
         const panel = page.getByTestId("slack-thread-panel");
         await expect(panel).toBeVisible();
+        await expect(panel.locator("textarea")).toHaveValue("@Fixture agent ");
+        await panel.locator("textarea").fill("");
         await expect(panel.locator("textarea")).toHaveAttribute("placeholder", "Reply in thread");
-        await expect(panel.locator("textarea")).toHaveValue("");
+        await expect(panel.getByTestId("thread-recipient-hint")).toHaveText(
+          "Continuing with @Fixture agent",
+        );
         await expect(panel.getByTestId(`slack-root-failure-${rootMessage.id}`)).toHaveText(
           "Failure: Run failed",
         );

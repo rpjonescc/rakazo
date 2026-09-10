@@ -38,6 +38,7 @@ import {
   clampMentionHighlightIndex,
   cronFromPreset,
   groupBotsForSidebar,
+  hasMentionToken,
   inferAttachmentMimeType,
   isActive,
   isPeerReceiptBlocks,
@@ -54,6 +55,7 @@ import {
   searchHitThreadTarget,
   serializeComposerPrompt,
   speechFromBlocks,
+  stripMentionKinds,
   truncateSlashDescription,
   userVisibleMessages,
 } from "@rakazo/core";
@@ -2237,7 +2239,7 @@ export function ShellPage() {
       const rootId = slackThreadRoot?.id;
       if (!rootId) return;
       await sendMessage(text, mentions, rootId);
-      await loadSlackReplies(rootId);
+      return (await loadSlackReplies(rootId))?.recipientBotIds;
     },
     [loadSlackReplies, sendMessage, slackThreadRoot?.id],
   );
@@ -2889,6 +2891,10 @@ export function ShellPage() {
                   disabled={
                     slackComposerProps.disabled || !slackReplyPage || Boolean(slackRepliesError)
                   }
+                  threadRecipients={slackReplyPage?.recipientBotIds?.flatMap((id) => {
+                    const bot = resolveTranscriptBot(id);
+                    return bot ? [{ kind: "bot" as const, id, name: bot.name }] : [];
+                  })}
                   placeholder={t`Reply in thread`}
                   onSend={sendSlackReply}
                   onStop={() => stopRun(slackThreadRoot.id)}
@@ -5100,6 +5106,7 @@ const Composer = memo(function Composer({
   onSlashAction,
   variant = "classic",
   placeholder,
+  threadRecipients,
 }: {
   activeName?: string;
   running: boolean;
@@ -5115,7 +5122,7 @@ const Composer = memo(function Composer({
   fileInputRef: RefObject<HTMLInputElement | null>;
   onAttachmentPick: (files: FileList | null) => void | Promise<void>;
   onRemoveAttachment: (attachment: PendingAttachment) => void;
-  onSend: (text: string, mentions?: ComposerMention[]) => Promise<void>;
+  onSend: (text: string, mentions?: ComposerMention[]) => Promise<void | string[]>;
   onStop: () => Promise<void>;
   onVoice?: () => void;
   replyTarget?: ThreadMessage | null;
@@ -5127,9 +5134,22 @@ const Composer = memo(function Composer({
   onSlashAction?: (action: SlashActionId) => void;
   variant?: "classic" | "slack";
   placeholder?: string;
+  threadRecipients?: ComposerMention[];
 }) {
   const { t } = useLingui();
   const [draft, setDraft] = useState("");
+  const recipientInitialized = useRef(false);
+  const draftRevision = useRef(0);
+  const generatedRecipients = useRef<ComposerMention[]>([]);
+  const latestRecipients = useRef(threadRecipients);
+  latestRecipients.current = threadRecipients;
+  useEffect(() => {
+    if (recipientInitialized.current || threadRecipients === undefined) return;
+    recipientInitialized.current = true;
+    if (draftRevision.current !== 0) return;
+    generatedRecipients.current = threadRecipients;
+    setDraft(threadRecipients.map((recipient) => `@${recipient.name} `).join(""));
+  }, [threadRecipients]);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionHighlightIndex, setMentionHighlightIndex] = useState(0);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
@@ -5142,9 +5162,20 @@ const Composer = memo(function Composer({
   const dragDepth = useRef(0);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const canSend =
-    draft.trim().length > 0 ||
+    (threadRecipients === undefined
+      ? draft.trim().length > 0
+      : stripMentionKinds(
+          draft,
+          [...(mentionTargets ?? []), ...generatedRecipients.current].sort(
+            (a, b) => b.name.length - a.name.length,
+          ),
+          ["bot", "everyone"],
+        ).length > 0) ||
     selectedSkill !== null ||
-    selectedMentions.length > 0 ||
+    selectedMentions.some(
+      (mention) =>
+        threadRecipients === undefined || (mention.kind !== "bot" && mention.kind !== "everyone"),
+    ) ||
     pendingAttachments.length > 0;
 
   useEffect(() => {
@@ -5207,6 +5238,10 @@ const Composer = memo(function Composer({
   }, [draft]);
 
   function updateDraft(value: string) {
+    draftRevision.current += 1;
+    generatedRecipients.current = generatedRecipients.current.filter((recipient) =>
+      hasMentionToken(value, recipient.name),
+    );
     setDraft(value);
     const mentionMatch = /(?:^|\s)@([\w-]*)$/.exec(value);
     setMentionQuery(mentionMatch ? (mentionMatch[1] ?? "") : null);
@@ -5303,10 +5338,27 @@ const Composer = memo(function Composer({
   function send() {
     if (!canSend || sending || disabled) return;
     const text = serializeComposerPrompt(draft, selectedSkill, selectedMentions);
-    const mentions = selectedMentions;
+    const mentions = [
+      ...selectedMentions,
+      ...generatedRecipients.current.filter((recipient) => hasMentionToken(draft, recipient.name)),
+    ];
+    const revision = draftRevision.current;
     void onSend(text, mentions)
-      .then(() => {
-        setDraft("");
+      .then((recipientIds) => {
+        // A delayed acknowledgement must not clear a newer draft or move focus.
+        if (draftRevision.current !== revision || !textareaRef.current?.isConnected) return;
+        // Read back the actual committed audience, including @everyone and inherited sends.
+        const recipients = recipientIds
+          ? recipientIds.flatMap((id) => {
+              const recipient = [
+                ...(mentionTargets ?? []),
+                ...(latestRecipients.current ?? []),
+              ].find((target) => target.kind === "bot" && target.id === id);
+              return recipient ? [recipient] : [];
+            })
+          : [];
+        generatedRecipients.current = recipients;
+        setDraft(recipients.map((recipient) => `@${recipient.name} `).join(""));
         setMentionQuery(null);
         setMentionHighlightIndex(0);
         setSlashQuery(null);
@@ -5439,6 +5491,15 @@ const Composer = memo(function Composer({
           >
             <X size={13} strokeWidth={2} />
           </button>
+        </div>
+      ) : null}
+      {threadRecipients?.length &&
+      ![...(mentionTargets ?? []), ...generatedRecipients.current].some(
+        (recipient) => recipient.kind === "bot" && hasMentionToken(draft, recipient.name),
+      ) &&
+      !selectedMentions.some((mention) => mention.kind === "bot") ? (
+        <div data-testid="thread-recipient-hint" className="mb-2 text-xs text-muted-foreground">
+          {t`Continuing with ${threadRecipients.map((recipient) => `@${recipient.name}`).join(", ")}`}
         </div>
       ) : null}
       {attachmentNotice ? (

@@ -1,0 +1,1 @@
+ALTER TABLE "messages" ADD COLUMN "recipientBotIds" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];

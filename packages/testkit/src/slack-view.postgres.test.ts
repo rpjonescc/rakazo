@@ -59,6 +59,151 @@ describeWithDatabase("optional Slack view thread persistence", () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
+  it("keeps an unmentioned followup with Sage rather than the first group member", async () => {
+    const cookie = await signup(app, `recipient-${stamp}@rakazo.test`, "Recipient owner");
+    const mylo = await rpc<{ id: string }>(app, cookie, "bots/create", { name: "Mylo" });
+    const sage = await rpc<{ id: string }>(app, cookie, "bots/create", { name: "Sage" });
+    const group = await rpc<{ id: string; threadId: string }>(app, cookie, "groups/create", {
+      name: "Recipient continuity",
+      botIds: [mylo.id, sage.id],
+    });
+    const send = async (input: Record<string, unknown>) => {
+      const sent = await rpc<{ runId: string; messageId: string }>(app, cookie, "threads/send", {
+        groupId: group.id,
+        ...input,
+      });
+      await expect
+        .poll(() => prisma.run.findUnique({ where: { id: sent.runId } }), { timeout: 10000 })
+        .toMatchObject({ status: "completed" });
+      return sent;
+    };
+    const root = await send({
+      text: "@Sage How is it going?",
+      mentions: [sage.id],
+      conversationMode: "thread",
+    });
+    const followup = await send({
+      text: "Not too bad actually!",
+      replyToMessageId: root.messageId,
+      replyInThread: true,
+    });
+    expect(await prisma.run.findUnique({ where: { id: followup.runId } })).toMatchObject({
+      botId: sage.id,
+      conversationRootMessageId: root.messageId,
+    });
+    const audience = async () =>
+      (
+        await rpc<ReplyPage & { recipientBotIds: string[] }>(app, cookie, "threads/replies", {
+          groupId: group.id,
+          rootMessageId: root.messageId,
+        })
+      ).recipientBotIds;
+    expect(await audience()).toEqual([sage.id]);
+    await send({ text: "@Mylo Your turn", replyToMessageId: root.messageId, replyInThread: true });
+    expect(await audience()).toEqual([mylo.id]);
+    const redirected = await send({
+      text: "Continue",
+      replyToMessageId: root.messageId,
+      replyInThread: true,
+    });
+    expect(await prisma.run.findUnique({ where: { id: redirected.runId } })).toMatchObject({
+      botId: mylo.id,
+    });
+    const other = await rpc<{ id: string }>(app, cookie, "bots/create", { name: "Outsider" });
+    const beforeInvalid = await prisma.message.count({ where: { threadId: group.threadId } });
+    expect(
+      (
+        await raw(app, cookie, "threads/send", {
+          groupId: group.id,
+          text: "@Outsider Redirect",
+          mentions: [other.id],
+          replyToMessageId: root.messageId,
+          replyInThread: true,
+        })
+      ).ok,
+    ).toBe(false);
+    expect(await prisma.message.count({ where: { threadId: group.threadId } })).toBe(beforeInvalid);
+    expect(await audience()).toEqual([mylo.id]);
+    const multi = await send({
+      text: "@Mylo @Sage Both respond",
+      mentions: [mylo.id, sage.id],
+      replyToMessageId: root.messageId,
+      replyInThread: true,
+    });
+    await expect
+      .poll(() =>
+        prisma.run.count({ where: { sourceMessageId: multi.messageId, status: "completed" } }),
+      )
+      .toBe(2);
+    expect(new Set(await audience())).toEqual(new Set([mylo.id, sage.id]));
+    const multiFollowup = await send({
+      text: "Both continue",
+      replyToMessageId: root.messageId,
+      replyInThread: true,
+    });
+    await expect
+      .poll(() =>
+        prisma.run.count({
+          where: { sourceMessageId: multiFollowup.messageId, status: "completed" },
+        }),
+      )
+      .toBe(2);
+    // A later helper message is not a direct user audience change.
+    await createThreadMessage(prisma, {
+      threadId: group.threadId,
+      role: "bot",
+      botId: other.id,
+      threadRootMessageId: root.messageId,
+      blocks: [{ kind: "text", text: "Helper result" }],
+    });
+    expect(new Set(await audience())).toEqual(new Set([mylo.id, sage.id]));
+    const independent = await send({ text: "@Mylo Separate root", conversationMode: "thread" });
+    expect(
+      (await prisma.message.findUniqueOrThrow({ where: { id: independent.messageId } }))
+        .recipientBotIds,
+    ).toEqual([mylo.id]);
+    expect(new Set(await audience())).toEqual(new Set([mylo.id, sage.id]));
+    // Removing or archiving one recipient must reject the whole inherited set, never partially wake/fallback.
+    await rpc(app, cookie, "groups/update", { groupId: group.id, botIds: [mylo.id] });
+    const denyWithoutWrites = async () => {
+      const messages = await prisma.message.count({ where: { threadId: group.threadId } });
+      const runs = await prisma.run.count({ where: { threadId: group.threadId } });
+      expect(
+        (
+          await raw(app, cookie, "threads/send", {
+            groupId: group.id,
+            text: "Do not reroute",
+            replyToMessageId: root.messageId,
+            replyInThread: true,
+          })
+        ).ok,
+      ).toBe(false);
+      expect(await prisma.message.count({ where: { threadId: group.threadId } })).toBe(messages);
+      expect(await prisma.run.count({ where: { threadId: group.threadId } })).toBe(runs);
+      expect(new Set(await audience())).toEqual(new Set([mylo.id, sage.id]));
+    };
+    await denyWithoutWrites();
+    await rpc(app, cookie, "groups/update", { groupId: group.id, botIds: [mylo.id, sage.id] });
+    await prisma.bot.update({ where: { id: sage.id }, data: { archivedAt: new Date() } });
+    await denyWithoutWrites();
+    await prisma.bot.update({ where: { id: sage.id }, data: { archivedAt: null } });
+    await prisma.run.update({ where: { id: independent.runId }, data: { status: "running" } });
+    await denyWithoutWrites();
+    await prisma.run.update({ where: { id: independent.runId }, data: { status: "completed" } });
+    // Legacy initialization recovers the original root's user run, not the latest helper or redirect.
+    await prisma.message.update({ where: { id: root.messageId }, data: { recipientBotIds: [] } });
+    expect(await audience()).toEqual([sage.id]);
+    const legacy = await send({
+      text: "Legacy continuation",
+      replyToMessageId: root.messageId,
+      replyInThread: true,
+    });
+    expect(await prisma.run.findUnique({ where: { id: legacy.runId } })).toMatchObject({
+      botId: sage.id,
+    });
+    expect(await audience()).toEqual([sage.id]);
+  });
+
   it("persists optional channel descriptions without runs and rejects unauthorized edits", async () => {
     const cookie = await signup(app, `description-${stamp}@rakazo.test`, "Description owner");
     const intruder = await signup(app, `description-other-${stamp}@rakazo.test`, "Other owner");
@@ -944,6 +1089,7 @@ describeWithDatabase("optional Slack view thread persistence", () => {
       role: "user",
       blocks: [{ kind: "text", text: "Failed group root" }],
     });
+    await prisma.message.update({ where: { id: root.id }, data: { recipientBotIds: [beta.id] } });
     const alphaRow = await prisma.bot.findUniqueOrThrow({ where: { id: alpha.id } });
     const task = await prisma.task.create({
       data: {
@@ -986,6 +1132,9 @@ describeWithDatabase("optional Slack view thread persistence", () => {
     expect(retry.rootMessageId).toBe(root.id);
     expect(retry.runIds).toEqual([retry.runId]);
     expect(retry.runId).not.toBe(failedRun.id);
+    expect(
+      (await prisma.message.findUniqueOrThrow({ where: { id: root.id } })).recipientBotIds,
+    ).toEqual([beta.id]);
 
     const runs = await prisma.run.findMany({
       where: { threadId: group.threadId },

@@ -482,6 +482,7 @@ model Message {
   threadRootMessageId String?
   threadRootMessage   Message?  @relation("MessageThreadRoots", fields: [threadRootMessageId], references: [id], onDelete: SetNull)
   threadReplies       Message[] @relation("MessageThreadRoots")
+  recipientBotIds      String[] @default([])
   runId                String?
   clientNonce          String?
   thumbsUp              Boolean   @default(false)

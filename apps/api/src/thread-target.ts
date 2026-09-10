@@ -632,6 +632,8 @@ function mapRun(run: {
   };
 }
 
+import { loadThreadRecipientBotIds } from "./thread-recipients.js";
+
 export async function sendThreadMessage(
   deps: {
     prisma: PrismaClient;
@@ -841,13 +843,26 @@ export async function sendThreadMessage(
       const memberBotIds = members.map((member) => member.botId);
       const mentionTargets = splitMentionTargets(input.mentions);
       if (retryRun && !memberBotIds.includes(retryRun.botId)) throw new IsolationError();
+      if (
+        threadRootMessageId &&
+        !retryRun &&
+        mentionTargets.botMentionIds.some((id) => !memberBotIds.includes(id))
+      ) {
+        throw new ORPCError("CONFLICT", { message: "Choose an available thread recipient." });
+      }
       const targetBotIds = retryRun
         ? [retryRun.botId]
         : resolveGroupTargetBotIds({
             text: input.text ?? "",
             members: members.map((member) => ({ id: member.botId, name: member.name })),
             explicitMentions: mentionTargets.botMentionIds,
+            fallbackBotIds: threadRootMessageId
+              ? await loadThreadRecipientBotIds(tx, target.threadId, threadRootMessageId)
+              : undefined,
           });
+      if (!targetBotIds.length || targetBotIds.some((id) => !memberBotIds.includes(id))) {
+        throw new ORPCError("CONFLICT", { message: "Choose an available thread recipient." });
+      }
       const { blocks: attachmentBlocks, artifacts } = await resolveGroupSendAttachments(
         { prisma: tx },
         actor,
@@ -960,6 +975,12 @@ export async function sendThreadMessage(
             keepRunIds: createdRuns.map((run) => run.id),
           });
         }
+      }
+      if (requestedRootMessageId && !retryRun) {
+        await tx.message.update({
+          where: { id: requestedRootMessageId },
+          data: { recipientBotIds: targetBotIds },
+        });
       }
       await touchGroupUpdatedAt(tx, target.groupId);
       const event = await appendEventInTransaction(tx, {
