@@ -1,8 +1,18 @@
 import "./slack-workspace.css";
 import type { Bot, Group, ThreadSnapshot } from "@rakazo/contracts";
 import { BotAvatar, GroupAvatar } from "@rakazo/ui-web";
-import { ChevronDown, Menu, Monitor, Moon, Plus, Search, Settings, Sun, X } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import {
+  ArrowLeft,
+  ChevronDown,
+  Menu,
+  Monitor,
+  Moon,
+  Plus,
+  Search,
+  Settings,
+  Sun,
+} from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { desktopBridge } from "../../lib/desktop";
 import { setUiAppearance } from "../../lib/ui-appearance";
 import { WindowChrome } from "../WindowChrome";
@@ -29,7 +39,13 @@ type Props = {
   threadOpen: boolean;
   replyCount: number;
   repliesLoading: boolean;
+  threadFocusMode?: "back" | "composer";
   onCloseThread: () => void;
+};
+
+type ThreadHistoryEntry = {
+  id: string;
+  href: string;
 };
 
 export function SlackWorkspace({
@@ -54,10 +70,100 @@ export function SlackWorkspace({
   threadOpen,
   replyCount,
   repliesLoading,
+  threadFocusMode = "back",
   onCloseThread,
 }: Props) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [dark, setDark] = useState(() => document.documentElement.dataset.theme === "dark");
+  const threadCloseRef = useRef(onCloseThread);
+  threadCloseRef.current = onCloseThread;
+  const threadBackRef = useRef<HTMLButtonElement>(null);
+  const focusBeforeThreadRef = useRef<HTMLElement | null>(null);
+  const threadHistoryEntryRef = useRef<ThreadHistoryEntry | null>(null);
+  const [mobileViewport, setMobileViewport] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 1279px)");
+    const update = () => setMobileViewport(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (!threadOpen) return;
+    const activeElement = document.activeElement;
+    focusBeforeThreadRef.current = activeElement instanceof HTMLElement ? activeElement : null;
+    const entry = {
+      id: `thread-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      href: window.location.href,
+    };
+    window.history.pushState(
+      { ...(window.history.state ?? {}), rakazoThread: true, rakazoThreadId: entry.id },
+      "",
+      entry.href,
+    );
+    threadHistoryEntryRef.current = entry;
+    const onPopState = () => {
+      const current = threadHistoryEntryRef.current;
+      if (!current || window.history.state?.rakazoThreadId === current.id) return;
+      threadHistoryEntryRef.current = null;
+      threadCloseRef.current();
+      window.requestAnimationFrame(() => focusBeforeThreadRef.current?.focus());
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      const current = threadHistoryEntryRef.current;
+      threadHistoryEntryRef.current = null;
+      if (
+        current &&
+        window.location.href === current.href &&
+        window.history.state?.rakazoThreadId === current.id
+      ) {
+        window.history.back();
+      }
+      threadCloseRef.current();
+      window.requestAnimationFrame(() => focusBeforeThreadRef.current?.focus());
+    };
+    window.addEventListener("popstate", onPopState);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("keydown", onKeyDown);
+      if (threadHistoryEntryRef.current?.id === entry.id) threadHistoryEntryRef.current = null;
+    };
+  }, [threadOpen]);
+
+  useEffect(() => {
+    if (!threadOpen) return;
+    const focusFrame = window.requestAnimationFrame(() => {
+      if (threadFocusMode === "composer" && !repliesLoading) {
+        const composer = document.querySelector('[data-testid="slack-thread-panel"] textarea');
+        if (composer instanceof HTMLElement) {
+          composer.focus();
+          return;
+        }
+      }
+      threadBackRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(focusFrame);
+  }, [repliesLoading, threadFocusMode, threadOpen]);
+
+  const closeThread = useCallback(() => {
+    const entry = threadHistoryEntryRef.current;
+    threadHistoryEntryRef.current = null;
+    if (
+      entry &&
+      window.location.href === entry.href &&
+      window.history.state?.rakazoThreadId === entry.id
+    ) {
+      window.history.back();
+    }
+    threadCloseRef.current();
+    window.requestAnimationFrame(() => focusBeforeThreadRef.current?.focus());
+  }, []);
+
   function toggleTheme() {
     const next = dark ? "light" : "dark";
     setUiAppearance(next);
@@ -243,7 +349,10 @@ export function SlackWorkspace({
         </div>
       </aside>
 
-      <main className="flex min-w-0 flex-1 flex-col bg-background">
+      <main
+        inert={threadOpen && mobileViewport ? true : undefined}
+        className="flex min-w-0 flex-1 flex-col bg-background"
+      >
         <header className="app-drag flex min-h-[63px] items-center justify-between border-b border-sidebar-border px-3 md:px-5">
           <div className="flex min-w-0 items-center gap-2">
             <button
@@ -316,8 +425,19 @@ export function SlackWorkspace({
           data-testid="slack-thread-panel"
           className="absolute inset-y-0 end-0 z-30 flex w-full max-w-[430px] flex-col border-s border-sidebar-border bg-background shadow-xl xl:relative xl:z-auto xl:w-[390px] xl:shadow-none"
         >
-          <header className="flex min-h-[63px] items-center justify-between border-b border-sidebar-border px-4">
-            <div>
+          <header className="flex min-h-[63px] items-center gap-2 border-b border-sidebar-border px-3">
+            <button
+              ref={threadBackRef}
+              type="button"
+              data-testid="slack-thread-back"
+              aria-label={activeGroup ? "Back to channel" : "Back to direct message"}
+              title={activeGroup ? "Back to channel" : "Back to direct message"}
+              onClick={closeThread}
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <ArrowLeft size={18} strokeWidth={1.8} />
+            </button>
+            <div className="min-w-0">
               <h2 className="text-[15px] font-semibold">
                 Thread{" "}
                 <span className="ms-1 text-xs font-normal text-muted-foreground">
@@ -328,14 +448,6 @@ export function SlackWorkspace({
                 {replyCount} {replyCount === 1 ? "reply" : "replies"}
               </p>
             </div>
-            <button
-              type="button"
-              aria-label="Close thread"
-              onClick={onCloseThread}
-              className="grid h-8 w-8 place-items-center rounded-lg hover:bg-accent"
-            >
-              <X size={16} />
-            </button>
           </header>
           {repliesLoading ? (
             <div className="grid flex-1 place-items-center text-sm text-muted-foreground">

@@ -20,6 +20,7 @@ import type {
   SpaceMemoryConfig,
   TaughtSkill,
   ThreadMessage,
+  ThreadRootSummary,
   ThreadSnapshot,
   VoiceStatus,
 } from "@rakazo/contracts";
@@ -260,6 +261,12 @@ type PendingAttachment = {
   previewUrl?: string;
 };
 
+type PendingSendIntent = {
+  key: string;
+  clientNonce: string;
+  artifactIds?: string[];
+};
+
 type PendingBrowserNotification = {
   event: Pick<ProductEvent, "id" | "type" | "threadId" | "botId" | "payload">;
   botId: string;
@@ -380,6 +387,9 @@ export function ShellPage() {
   // A very fast run can finish over SSE while its threads.send response is still
   // returning. Do not let that late receipt resurrect terminal work as queued.
   const terminalRunReceipts = useRef(new Set<string>());
+  // Preserve the idempotency key when the server committed a send but the response
+  // was lost. Editing the draft or changing its target creates a new intent.
+  const pendingSendIntentRef = useRef<PendingSendIntent | null>(null);
   // Last-known computer/screen per bot, so switching back to an already-seen
   // bot paints its computer pane instantly instead of blanking it while the
   // thread + screen RPCs round-trip again (see refreshThread / refreshComputerScreen).
@@ -598,6 +608,18 @@ export function ShellPage() {
   activeBotId.current = inGroup ? undefined : active?.id;
   const activeGroupId = useRef<string | undefined>(groupId);
   activeGroupId.current = groupId;
+  const physicalConversationKey = groupId
+    ? `group:${groupId}`
+    : active?.id
+      ? `bot:${active.id}`
+      : "";
+  const physicalConversationRef = useRef({ key: physicalConversationKey, generation: 0 });
+  if (physicalConversationRef.current.key !== physicalConversationKey) {
+    physicalConversationRef.current = {
+      key: physicalConversationKey,
+      generation: physicalConversationRef.current.generation + 1,
+    };
+  }
   const screenRequest = useRef(0);
   const contextBot =
     botMenu?.kind === "bot" ? bots.find((bot) => bot.id === botMenu.id) : undefined;
@@ -798,7 +820,10 @@ export function ShellPage() {
     const stickToEnd = !scrollElement || transcriptIsNearEnd(scrollElement);
     markOnce("rk:renderer:thread-request-start");
     const request = ++groupRefreshEpoch.current;
-    const snap = await rpc.threads.get({ groupId: id }, signal ? { signal } : undefined);
+    const snap = await rpc.threads.get(
+      { groupId: id, includeRoots: true },
+      signal ? { signal } : undefined,
+    );
     markOnce("rk:renderer:thread-response");
     if (activeGroupId.current !== id || request !== groupRefreshEpoch.current) return snap;
     const reconciled = reconcileRefreshedThread(
@@ -830,7 +855,10 @@ export function ShellPage() {
     const request = ++threadRefreshEpoch.current;
     // Apply threads.get as soon as it returns so stop/takeover status is not held behind
     // routines/skills/screen fetches (progress can advance the cursor meanwhile).
-    const snap = await rpc.threads.get({ botId: id }, signal ? { signal } : undefined);
+    const snap = await rpc.threads.get(
+      { botId: id, includeRoots: true },
+      signal ? { signal } : undefined,
+    );
     markOnce("rk:renderer:thread-response");
     if (
       activeBotId.current !== id ||
@@ -899,13 +927,15 @@ export function ShellPage() {
   async function loadOlderMessages() {
     const targetBotId = inGroup ? undefined : active?.id;
     const targetGroupId = inGroup ? groupId : undefined;
+    const rootsOnly = presentationMode === "slack";
     const snapshotMatchesTarget = targetGroupId
       ? snapshot?.groupId === targetGroupId
       : snapshot?.botId === targetBotId;
+    const olderCursor = rootsOnly ? snapshot?.rootOlderCursor : snapshot?.olderCursor;
     if (
       (!targetBotId && !targetGroupId) ||
       !snapshotMatchesTarget ||
-      snapshot?.olderCursor == null ||
+      olderCursor == null ||
       loadingOlder
     )
       return;
@@ -913,12 +943,13 @@ export function ShellPage() {
     const scrollElement = messageScroll.current;
     const previousHeight = scrollElement?.scrollHeight ?? 0;
     const epoch = historyEpoch.current;
-    const before = snapshot.olderCursor;
+    const before = olderCursor;
     setLoadingOlder(true);
     try {
       const page = await rpc.threads.messages({
         ...(targetGroupId ? { groupId: targetGroupId } : { botId: targetBotId! }),
         before,
+        ...(rootsOnly ? { rootsOnly: true } : {}),
       });
       if (
         epoch !== historyEpoch.current ||
@@ -927,7 +958,7 @@ export function ShellPage() {
       )
         return;
       expandedHistoryThread.current = page.threadId;
-      updateSnapshot((prev) => prependThreadMessagePage(prev, page));
+      updateSnapshot((prev) => prependThreadMessagePage(prev, page, rootsOnly));
       window.requestAnimationFrame(() => {
         const element = messageScroll.current;
         if (element) element.scrollTop += element.scrollHeight - previousHeight;
@@ -1171,6 +1202,7 @@ export function ShellPage() {
         if (event.type === "thread.cleared") {
           expandedHistoryThread.current = null;
           pinnedAroundRef.current = null;
+          physicalConversationRef.current.generation += 1;
           historyEpoch.current += 1;
         }
         if (event.type === "bot.archived") {
@@ -1271,6 +1303,9 @@ export function ShellPage() {
         if (event.type === "thread.message.created" && event.payload.role === "bot") {
           readVisibleGroups.current.delete(groupId);
           markVisibleGroupRead();
+        }
+        if (event.type === "thread.cleared") {
+          physicalConversationRef.current.generation += 1;
         }
         if (event.type === "run.started" || isRunTerminalEvent(event)) {
           void refreshBots().catch(() => undefined);
@@ -1481,7 +1516,7 @@ export function ShellPage() {
     jumpGeneration.current += 1;
     const jumpId = jumpGeneration.current;
     const [snap, page] = await Promise.all([
-      rpc.threads.get(threadTarget),
+      rpc.threads.get({ ...threadTarget, includeRoots: presentationMode === "slack" }),
       rpc.threads.messages({ ...threadTarget, around: { messageId: target.messageId } }),
     ]);
     // The epoch check drops a jump that raced a conversation clear (or a bot switch): applying
@@ -1614,6 +1649,10 @@ export function ShellPage() {
     () => userVisibleMessages(activeSnapshot?.messages ?? [], { includePeerReceipts: true }),
     [activeSnapshot?.messages],
   );
+  const slackRootMessages = useMemo(
+    () => activeSnapshot?.rootMessages ?? [],
+    [activeSnapshot?.rootMessages],
+  );
   const transcriptArtifactTarget = useMemo<ArtifactTarget>(
     () => (inGroup ? { groupId: groupId ?? "" } : { botId: active?.id ?? "" }),
     [active?.id, groupId, inGroup],
@@ -1629,6 +1668,21 @@ export function ShellPage() {
     close: closeSlackThread,
     loadOlder: loadOlderSlackReplies,
   } = useReplyThread(transcriptArtifactTarget, activeSnapshot?.cursor ?? -1);
+  const slackThreadSelectionGeneration = useRef(0);
+  const [slackThreadFocusMode, setSlackThreadFocusMode] = useState<"back" | "composer">("back");
+  const openExplicitSlackThread = useCallback(
+    async (message: ThreadMessage) => {
+      slackThreadSelectionGeneration.current += 1;
+      setSlackThreadFocusMode("back");
+      await openSlackThread(message);
+    },
+    [openSlackThread],
+  );
+  const closeExplicitSlackThread = useCallback(() => {
+    slackThreadSelectionGeneration.current += 1;
+    setSlackThreadFocusMode("back");
+    closeSlackThread();
+  }, [closeSlackThread]);
   const transcriptMembers = activeSnapshot?.members ?? activeGroup?.members;
   const resolveTranscriptBot = useCallback(
     (botId: string) => {
@@ -1647,6 +1701,52 @@ export function ShellPage() {
       status: run.status,
     };
   });
+  const slackRootSummaries = useMemo(
+    () =>
+      new Map(
+        (activeSnapshot?.rootSummaries ?? []).map((summary) => [summary.rootMessageId, summary]),
+      ),
+    [activeSnapshot?.rootSummaries],
+  );
+  const slackRootWorkingBots = useMemo(() => {
+    const byBot = new Map<string, GroupAvatarMember>();
+    for (const summary of slackRootSummaries.values()) {
+      for (const run of summary.runs) {
+        if (!isActive(run.status) || byBot.has(run.botId)) continue;
+        const bot = resolveTranscriptBot(run.botId);
+        byBot.set(run.botId, {
+          botId: run.botId,
+          color: bot?.color ?? FALLBACK_BOT_COLOR,
+          name: bot?.name,
+          status: run.status,
+        });
+      }
+    }
+    return [...byBot.values()];
+  }, [resolveTranscriptBot, slackRootSummaries]);
+  const slackRootsRunning = slackRootWorkingBots.length > 0;
+  const slackThreadSummary = useMemo(() => {
+    const rootId = slackThreadRoot?.threadRootMessageId ?? slackThreadRoot?.id;
+    if (!rootId) return undefined;
+    return slackReplyPage?.rootSummary ?? slackRootSummaries.get(rootId);
+  }, [
+    slackReplyPage?.rootSummary,
+    slackRootSummaries,
+    slackThreadRoot?.id,
+    slackThreadRoot?.threadRootMessageId,
+  ]);
+  const slackThreadRunning = rootSummaryHasActiveRun(slackThreadSummary);
+  const slackThreadWorkingBots: GroupAvatarMember[] = (slackThreadSummary?.runs ?? [])
+    .filter((run) => isActive(run.status))
+    .map((run) => {
+      const bot = resolveTranscriptBot(run.botId);
+      return {
+        botId: run.botId,
+        color: bot?.color ?? FALLBACK_BOT_COLOR,
+        name: bot?.name,
+        status: run.status,
+      };
+    });
   const resolveTranscriptMemberName = useCallback(
     (botId: string | undefined) => memberName(transcriptMembers, botId),
     [transcriptMembers],
@@ -1798,32 +1898,6 @@ export function ShellPage() {
   const openBot = useCallback((id: string) => navigate(`/app/${id}`), [navigate]);
   const loadOlder = useCallback(() => loadOlderMessagesRef.current(), []);
 
-  // A raw history page can consist entirely of side-thread replies. Keep
-  // paging until the main canvas has a root, without retrying failed cursors.
-  const slackHistoryRequest = useRef("");
-  useEffect(() => {
-    if (
-      presentationMode !== "slack" ||
-      loadingOlder ||
-      activeSnapshot?.olderCursor == null ||
-      transcriptMessages.some((message) => !message.threadRootMessageId)
-    )
-      return;
-    const key = `${activeSnapshot.threadId}:${activeSnapshot.olderCursor}`;
-    if (slackHistoryRequest.current === key) return;
-    slackHistoryRequest.current = key;
-    void loadOlder().catch((cause) =>
-      setSendError(cause instanceof Error ? cause.message : "Could not load channel history"),
-    );
-  }, [
-    presentationMode,
-    loadingOlder,
-    activeSnapshot?.threadId,
-    activeSnapshot?.olderCursor,
-    transcriptMessages,
-    loadOlder,
-  ]);
-
   const jumpToReplyMessage = useCallback((messageId: string) => {
     const existing = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
     if (existing) {
@@ -1920,6 +1994,7 @@ export function ShellPage() {
       text: string,
       mentions: ComposerMention[] = [],
       replyOverride: string | null | undefined = undefined,
+      retryRunId?: string,
     ) => {
       const initialBotTarget = activeBotId.current;
       const initialGroupTarget = activeGroupId.current;
@@ -1939,6 +2014,10 @@ export function ShellPage() {
       const botTarget = reroutedToGroup ? undefined : initialBotTarget;
       const replyToMessageId =
         replyOverride === null ? undefined : (replyOverride ?? activeReplyTarget?.id);
+      const sendConversationGeneration = physicalConversationRef.current.generation;
+      const sendSelectionGeneration = slackThreadSelectionGeneration.current;
+      const shouldAutoOpenSlackRoot =
+        presentationMode === "slack" && replyOverride === null && !reroutedToGroup;
       if (
         plan.shouldSend &&
         (groupTarget || botsRef.current.find((bot) => bot.id === botTarget)?.notifyOnFinish)
@@ -1947,8 +2026,27 @@ export function ShellPage() {
         if (permissionRequest) void permissionRequest.then(flushPendingBrowserNotifications);
       }
       const trimmed = plan.trimmed;
+      const sendIntentKey = JSON.stringify({
+        target: groupTarget ?? botTarget ?? "",
+        text: trimmed,
+        mentions: plan.mentionPayload,
+        replyToMessageId: replyToMessageId ?? null,
+        replyInThread: replyOverride != null,
+        conversationMode:
+          presentationMode === "slack" && !reroutedToGroup && replyOverride === null
+            ? "thread"
+            : null,
+        attachments: attachments.map((attachment) => attachment.id),
+        retryRunId: retryRunId ?? null,
+      });
       setSending(true);
       setSendError(null);
+      let sentReceipt: {
+        messageId: string;
+        rootMessageId?: string;
+        taskId: string;
+        runId: string;
+      } | null = null;
       const dropDelayedSetup = () => {
         // Only after successful engagement so a failed upload/send keeps the setup card.
         if (initialBotTarget && focusPromptBotIdRef.current === initialBotTarget) {
@@ -1986,23 +2084,35 @@ export function ShellPage() {
           }
           return;
         }
-        const artifactIds: string[] = [];
-        for (const pending of attachments) {
-          const mimeType = inferAttachmentMimeType(pending.file.name, pending.file.type);
-          if (!mimeType) {
-            throw new Error(t`Unsupported file type: ${pending.file.name}`);
+        const pendingIntent = pendingSendIntentRef.current;
+        const clientNonce =
+          pendingIntent?.key === sendIntentKey ? pendingIntent.clientNonce : newClientNonce();
+        const reusableArtifactIds =
+          pendingIntent?.key === sendIntentKey ? pendingIntent.artifactIds : undefined;
+        pendingSendIntentRef.current = {
+          key: sendIntentKey,
+          clientNonce,
+          ...(reusableArtifactIds !== undefined ? { artifactIds: reusableArtifactIds } : {}),
+        };
+        const artifactIds: string[] = reusableArtifactIds ? [...reusableArtifactIds] : [];
+        if (reusableArtifactIds === undefined) {
+          for (const pending of attachments) {
+            const mimeType = inferAttachmentMimeType(pending.file.name, pending.file.type);
+            if (!mimeType) {
+              throw new Error(t`Unsupported file type: ${pending.file.name}`);
+            }
+            const contentBase64 = await readFileAsBase64(pending.file);
+            const artifact = await rpc.artifacts.create(
+              groupTarget
+                ? { groupId: groupTarget, name: pending.file.name, mimeType, contentBase64 }
+                : { botId: botTarget!, name: pending.file.name, mimeType, contentBase64 },
+            );
+            artifactIds.push(artifact.id);
           }
-          const contentBase64 = await readFileAsBase64(pending.file);
-          const artifact = await rpc.artifacts.create(
-            groupTarget
-              ? { groupId: groupTarget, name: pending.file.name, mimeType, contentBase64 }
-              : { botId: botTarget!, name: pending.file.name, mimeType, contentBase64 },
-          );
-          artifactIds.push(artifact.id);
+          pendingSendIntentRef.current = { key: sendIntentKey, clientNonce, artifactIds };
         }
-        const clientNonce = newClientNonce();
         if (groupTarget) {
-          await rpc.threads.send({
+          sentReceipt = await rpc.threads.send({
             groupId: groupTarget,
             clientNonce,
             text: trimmed || undefined,
@@ -2010,9 +2120,14 @@ export function ShellPage() {
             artifactIds: artifactIds.length ? artifactIds : undefined,
             replyToMessageId: reroutedToGroup ? undefined : replyToMessageId,
             replyInThread: !reroutedToGroup && replyOverride != null,
+            retryRunId: !reroutedToGroup ? retryRunId : undefined,
+            conversationMode:
+              presentationMode === "slack" && !reroutedToGroup && replyOverride === null
+                ? "thread"
+                : undefined,
           });
         } else if (botTarget) {
-          const sent = await rpc.threads.send({
+          sentReceipt = await rpc.threads.send({
             botId: botTarget,
             clientNonce,
             text: trimmed || undefined,
@@ -2020,6 +2135,9 @@ export function ShellPage() {
             artifactIds: artifactIds.length ? artifactIds : undefined,
             replyToMessageId,
             replyInThread: replyOverride != null,
+            retryRunId,
+            conversationMode:
+              presentationMode === "slack" && replyOverride === null ? "thread" : undefined,
           });
           if (activeBotId.current === botTarget) {
             updateSnapshot((current) =>
@@ -2027,38 +2145,78 @@ export function ShellPage() {
                 current,
                 {
                   botId: botTarget,
-                  runId: sent.runId,
-                  taskId: sent.taskId,
+                  runId: sentReceipt!.runId,
+                  taskId: sentReceipt!.taskId,
                 },
                 terminalRunReceipts.current,
               ),
             );
           }
         }
+        // Refresh sidebar status even when a bot→group reroute navigates away below.
+        void refreshBots().catch(() => undefined);
+        let refreshed: ThreadSnapshot | null = null;
+        if (!reroutedToGroup) {
+          try {
+            if (groupTarget) refreshed = await refreshGroupThreadRef.current(groupTarget);
+            else if (botTarget) refreshed = await refreshThreadRef.current(botTarget);
+          } catch {
+            throw new Error(t`Message sent. History refresh failed; retry to reconcile.`);
+          }
+        }
+        pendingSendIntentRef.current = null;
         dropDelayedSetup();
         setReplyTarget(null);
         revokePendingAttachmentPreviews(attachments);
         setPendingAttachments((current) =>
           current.filter((attachment) => attachment.threadKey !== originThreadKey),
         );
-        // Refresh sidebar status even when a bot→group reroute navigates away below.
-        void refreshBots().catch(() => undefined);
         if (reroutedToGroup && groupTarget) {
           navigate(`/app/g/${groupTarget}`);
           return;
         }
         if (groupTarget && activeGroupId.current === groupTarget) setAttachmentNotice(null);
         if (botTarget && activeBotId.current === botTarget) setAttachmentNotice(null);
-        if (groupTarget) await refreshGroupThreadRef.current(groupTarget);
-        else if (botTarget) await refreshThreadRef.current(botTarget);
+        if (shouldAutoOpenSlackRoot && sentReceipt && refreshed) {
+          const rootId = sentReceipt.rootMessageId ?? sentReceipt.messageId;
+          const current = snapshotRef.current;
+          const root =
+            refreshed.rootMessages?.find((message) => message.id === rootId) ??
+            refreshed.messages.find((message) => message.id === rootId) ??
+            current?.rootMessages?.find((message) => message.id === rootId) ??
+            current?.messages.find((message) => message.id === rootId) ??
+            refreshed.rootMessages?.find((message) => message.runId === sentReceipt?.runId) ??
+            refreshed.messages.find((message) => message.runId === sentReceipt?.runId) ??
+            current?.rootMessages?.find((message) => message.runId === sentReceipt?.runId) ??
+            current?.messages.find((message) => message.runId === sentReceipt?.runId);
+          const stillCurrent =
+            physicalConversationRef.current.generation === sendConversationGeneration &&
+            slackThreadSelectionGeneration.current === sendSelectionGeneration &&
+            (groupTarget
+              ? activeGroupId.current === groupTarget
+              : activeBotId.current === botTarget);
+          if (root && stillCurrent) {
+            setSlackThreadFocusMode("composer");
+            await openSlackThread(root);
+          }
+        }
       } catch (error) {
-        if (reroutedToGroup && groupTarget) {
+        if (error instanceof Error && error.message.startsWith("Message sent.")) {
+          if (reroutedToGroup && groupTarget) {
+            setSendError(error.message);
+          } else if (groupTarget && activeGroupId.current === groupTarget) {
+            setSendError(error.message);
+          } else if (botTarget && activeBotId.current === botTarget) {
+            setSendError(error.message);
+          }
+        } else if (reroutedToGroup && groupTarget) {
           setSendError(error instanceof Error ? error.message : t`Failed to send message`);
         } else if (groupTarget && activeGroupId.current === groupTarget) {
           setSendError(error instanceof Error ? error.message : t`Failed to send message`);
         } else if (botTarget && activeBotId.current === botTarget) {
           setSendError(error instanceof Error ? error.message : t`Failed to send message`);
         }
+        throw error;
       } finally {
         setSending(false);
       }
@@ -2067,7 +2225,9 @@ export function ShellPage() {
       activeReplyTarget?.id,
       flushPendingBrowserNotifications,
       navigate,
+      openSlackThread,
       pendingAttachments,
+      presentationMode,
       sending,
       t,
     ],
@@ -2081,64 +2241,104 @@ export function ShellPage() {
     },
     [loadSlackReplies, sendMessage, slackThreadRoot?.id],
   );
+  const retrySlackRoot = useCallback(
+    async (message: ThreadMessage) => {
+      const text = retryableRootText(message);
+      if (!text) {
+        setSendError(t`This failed root has no text to retry`);
+        return;
+      }
+      const rootId = message.threadRootMessageId ?? message.id;
+      const summary =
+        (slackThreadSummary?.rootMessageId === rootId ? slackThreadSummary : undefined) ??
+        slackRootSummaries.get(rootId);
+      const failedRun = summary?.runs.find((run) => run.status === "failed");
+      if (!failedRun) {
+        setSendError(t`Retry details are unavailable for this failed root`);
+        return;
+      }
+      const bot = resolveTranscriptBot(failedRun.botId);
+      const mentions = inGroup
+        ? [
+            {
+              kind: "bot" as const,
+              id: failedRun.botId,
+              name: bot?.name ?? "Agent",
+              color: bot?.color ?? FALLBACK_BOT_COLOR,
+            },
+          ]
+        : [];
+      await sendMessage(text, mentions, rootId, failedRun.id);
+    },
+    [inGroup, resolveTranscriptBot, sendMessage, slackRootSummaries, slackThreadSummary, t],
+  );
   const followUpMessage = useCallback(async (text: string) => {
     const id = activeBotId.current;
     if (!id) return;
     await rpc.threads.followUp({ botId: id, text });
     await refreshThreadRef.current(id);
   }, []);
-  const stopRun = useCallback(async () => {
-    if (sending) return;
-    setSending(true);
-    try {
-      const botTarget = activeBotId.current;
-      const groupTarget = activeGroupId.current;
-      if (groupTarget) {
+  const stopRun = useCallback(
+    async (rootMessageId?: string) => {
+      if (sending) return;
+      setSending(true);
+      try {
+        const botTarget = activeBotId.current;
+        const groupTarget = activeGroupId.current;
+        if (groupTarget) {
+          setSendError(null);
+          try {
+            await rpc.threads.stop({
+              groupId: groupTarget,
+              ...(rootMessageId ? { rootMessageId } : {}),
+            });
+          } catch (error) {
+            if (activeGroupId.current === groupTarget) {
+              setSendError(error instanceof Error ? error.message : t`Failed to stop`);
+            }
+            return;
+          }
+          // Stop has no terminal event; clear run UI before refresh races with in-flight gets.
+          if (!rootMessageId && activeGroupId.current === groupTarget) {
+            updateSnapshot((prev) =>
+              prev && prev.groupId === groupTarget ? clearActiveThreadRuns(prev) : prev,
+            );
+          }
+          await refreshGroupThreadRef.current(groupTarget).catch(() => undefined);
+          return;
+        }
+        if (!botTarget) return;
         setSendError(null);
         try {
-          await rpc.threads.stop({ groupId: groupTarget });
+          await rpc.threads.stop({
+            botId: botTarget,
+            ...(rootMessageId ? { rootMessageId } : {}),
+          });
         } catch (error) {
-          if (activeGroupId.current === groupTarget) {
+          if (activeBotId.current === botTarget) {
             setSendError(error instanceof Error ? error.message : t`Failed to stop`);
           }
           return;
         }
-        // Stop has no terminal event; clear run UI before refresh races with in-flight gets.
-        if (activeGroupId.current === groupTarget) {
+        // Stop does not emit a terminal thread event. Clear local run/busy immediately so a
+        // superseded in-flight refresh (older cursor) cannot leave Stop enabled / Take control
+        // blocked while the API is already idle.
+        if (!rootMessageId && activeBotId.current === botTarget) {
           updateSnapshot((prev) =>
-            prev && prev.groupId === groupTarget ? clearActiveThreadRuns(prev) : prev,
+            !prev || (prev.botId !== botTarget && prev.botId) ? prev : clearActiveThreadRuns(prev),
           );
+          const currentComputer = computerRef.current;
+          if (currentComputer?.busyBotName) {
+            commitComputer({ ...currentComputer, busyBotName: null });
+          }
         }
-        await refreshGroupThreadRef.current(groupTarget).catch(() => undefined);
-        return;
+        await refreshThreadRef.current(botTarget).catch(() => undefined);
+      } finally {
+        setSending(false);
       }
-      if (!botTarget) return;
-      setSendError(null);
-      try {
-        await rpc.threads.stop({ botId: botTarget });
-      } catch (error) {
-        if (activeBotId.current === botTarget) {
-          setSendError(error instanceof Error ? error.message : t`Failed to stop`);
-        }
-        return;
-      }
-      // Stop does not emit a terminal thread event. Clear local run/busy immediately so a
-      // superseded in-flight refresh (older cursor) cannot leave Stop enabled / Take control
-      // blocked while the API is already idle.
-      if (activeBotId.current === botTarget) {
-        updateSnapshot((prev) =>
-          !prev || (prev.botId !== botTarget && prev.botId) ? prev : clearActiveThreadRuns(prev),
-        );
-        const currentComputer = computerRef.current;
-        if (currentComputer?.busyBotName) {
-          commitComputer({ ...currentComputer, busyBotName: null });
-        }
-      }
-      await refreshThreadRef.current(botTarget).catch(() => undefined);
-    } finally {
-      setSending(false);
-    }
-  }, [sending, t]);
+    },
+    [sending, t],
+  );
   const stopTeaching = useCallback(async () => {
     const id = activeBotId.current;
     if (!id || teachBusy) return;
@@ -2487,7 +2687,7 @@ export function ShellPage() {
     answerableAskMessageId,
     onOpenBot: openBot,
     onAnswer: answerMessage,
-    onReply: openSlackThread,
+    onReply: openExplicitSlackThread,
     onReact: reactToMessage,
     onJumpToMessage: jumpToReplyMessage,
     onOpenPeerMessages: setPeerConversation,
@@ -2583,20 +2783,21 @@ export function ShellPage() {
             if (active) void refreshThread(active.id).catch(() => undefined);
           }}
           onToggleClassic={() => {
-            closeSlackThread();
+            closeExplicitSlackThread();
             setPresentation("classic");
           }}
           threadOpen={Boolean(slackThreadRoot)}
           replyCount={slackReplyPage?.replyCount ?? slackThreadRoot?.replyCount ?? 0}
           repliesLoading={slackRepliesLoading && !slackReplyPage}
-          onCloseThread={closeSlackThread}
+          threadFocusMode={slackThreadFocusMode}
+          onCloseThread={closeExplicitSlackThread}
           timeline={
             <>
               <Transcript
                 {...slackTranscriptProps}
                 key={`${activeSnapshot?.threadId}:slack`}
                 introduction={
-                  activeGroup && activeSnapshot && !activeSnapshot.olderCursor ? (
+                  activeGroup && activeSnapshot && !activeSnapshot.rootOlderCursor ? (
                     <div data-testid="slack-channel-intro" className="px-6 py-6">
                       <h2 className="text-xl font-semibold break-words">
                         <span className="me-2 text-muted-foreground" aria-hidden>
@@ -2617,18 +2818,25 @@ export function ShellPage() {
                 }
                 variant="slack"
                 scrollRef={messageScroll}
-                messages={transcriptMessages.filter((message) => !message.threadRootMessageId)}
-                olderCursor={activeSnapshot?.olderCursor ?? null}
+                messages={slackRootMessages}
+                rootSummaries={activeSnapshot?.rootSummaries}
+                olderCursor={activeSnapshot?.rootOlderCursor ?? null}
                 loadingOlder={loadingOlder}
                 onLoadOlder={loadOlder}
-                running={transcriptRunning}
-                workingBots={workingBots}
+                running={slackRootsRunning}
+                workingBots={slackRootWorkingBots}
+                onStopRoot={(rootMessageId) => stopRun(rootMessageId)}
+                onRetryRoot={retrySlackRoot}
               />
               <Composer
                 {...slackComposerProps}
                 key={`${activeSnapshot?.threadId}:composer`}
                 variant="slack"
+                running={false}
+                runError={null}
+                runErrorId={null}
                 onSend={(text, mentions) => sendMessage(text, mentions, null)}
+                placeholder={t`Start a conversation`}
                 replyTarget={null}
                 onClearReply={() => undefined}
               />
@@ -2637,6 +2845,14 @@ export function ShellPage() {
           thread={
             slackThreadRoot ? (
               <>
+                <RootSummaryView
+                  summary={slackThreadSummary}
+                  resolveParticipantName={(botId) =>
+                    resolveTranscriptBot(botId)?.name ?? resolveTranscriptMemberName(botId)
+                  }
+                  onStopRoot={() => stopRun(slackThreadRoot.id)}
+                  onRetryRoot={() => retrySlackRoot(slackThreadRoot)}
+                />
                 <Transcript
                   {...slackTranscriptProps}
                   key={`${slackThreadRoot.id}:thread`}
@@ -2660,20 +2876,24 @@ export function ShellPage() {
                   olderCursor={slackReplyPage?.olderCursor ?? null}
                   loadingOlder={slackRepliesLoadingOlder}
                   onLoadOlder={loadOlderSlackReplies}
-                  running={false}
-                  workingBots={[]}
+                  running={slackThreadRunning}
+                  workingBots={slackThreadWorkingBots}
                 />
                 <Composer
                   {...slackComposerProps}
                   key={`${slackThreadRoot.id}:reply-composer`}
                   variant="slack"
+                  running={slackThreadRunning}
+                  runError={rootSummaryFailure(slackThreadSummary)}
+                  runErrorId={rootSummaryFailureRunId(slackThreadSummary)}
                   disabled={
                     slackComposerProps.disabled || !slackReplyPage || Boolean(slackRepliesError)
                   }
                   placeholder={t`Reply in thread`}
                   onSend={sendSlackReply}
+                  onStop={() => stopRun(slackThreadRoot.id)}
                   replyTarget={null}
-                  onClearReply={closeSlackThread}
+                  onClearReply={closeExplicitSlackThread}
                 />
               </>
             ) : null
@@ -4326,6 +4546,9 @@ const Transcript = memo(function Transcript({
   onSpeak,
   variant = "classic",
   threadRootId,
+  rootSummaries,
+  onStopRoot,
+  onRetryRoot,
   introduction,
 }: {
   scrollRef: RefObject<HTMLDivElement | null>;
@@ -4353,6 +4576,9 @@ const Transcript = memo(function Transcript({
   onSpeak: (message: ThreadMessage) => void;
   variant?: "classic" | "slack";
   threadRootId?: string;
+  rootSummaries?: readonly ThreadRootSummary[];
+  onStopRoot?: (rootMessageId: string) => void | Promise<void>;
+  onRetryRoot?: (message: ThreadMessage) => void | Promise<void>;
   introduction?: import("react").ReactNode;
 }) {
   const { t } = useLingui();
@@ -4365,6 +4591,10 @@ const Transcript = memo(function Transcript({
   const messageById = useMemo(
     () => new Map(messages.map((message) => [message.id, message])),
     [messages],
+  );
+  const rootSummaryById = useMemo(
+    () => new Map((rootSummaries ?? []).map((summary) => [summary.rootMessageId, summary])),
+    [rootSummaries],
   );
   const slack = variant === "slack";
   const workingBotName = workingBots.length === 1 ? workingBots[0]?.name : undefined;
@@ -4441,7 +4671,7 @@ const Transcript = memo(function Transcript({
     <div
       className={slack ? "relative flex min-h-0 flex-1 flex-col" : "relative flex min-h-0 flex-1"}
     >
-      {threadRootId ? (
+      {threadRootId && variant !== "slack" ? (
         <button
           type="button"
           className="border-b border-border px-4 py-2 text-start text-xs text-muted-foreground hover:text-foreground"
@@ -4512,6 +4742,10 @@ const Transcript = memo(function Transcript({
           if (!message.blocks.some((block) => !isToolActivityBlock(block))) return null;
           const peerReceipt = isPeerReceiptBlocks(message.blocks);
           const speaker = message.role === "bot" ? memberName?.(message.botId) : undefined;
+          const rootSummary =
+            slack && !threadRootId && !message.threadRootMessageId
+              ? rootSummaryById.get(message.id)
+              : undefined;
           return (
             <div
               key={message.id}
@@ -4617,6 +4851,17 @@ const Transcript = memo(function Transcript({
                     speaking={speakingMessageId === message.id}
                     onSpeak={() => onSpeak(message)}
                   />
+                  {rootSummary ? (
+                    <RootSummaryView
+                      summary={rootSummary}
+                      compact
+                      resolveParticipantName={(botId) => memberName?.(botId)}
+                      onStopRoot={
+                        onStopRoot ? () => onStopRoot(rootSummary.rootMessageId) : undefined
+                      }
+                      onRetryRoot={onRetryRoot ? () => onRetryRoot(message) : undefined}
+                    />
+                  ) : null}
                   {!peerReceipt &&
                   slack &&
                   !threadRootId &&
@@ -4681,6 +4926,150 @@ const Transcript = memo(function Transcript({
     </div>
   );
 });
+
+function rootSummaryHasActiveRun(summary: ThreadRootSummary | undefined): boolean {
+  return summary?.runs.some((run) => isActive(run.status)) ?? false;
+}
+
+function rootSummaryFailure(summary: ThreadRootSummary | undefined): string | null {
+  if (!summary) return null;
+  const failedRun = summary.runs.find((run) => run.status === "failed" && run.error);
+  return failedRun?.error ?? (summary.state === "failed" ? "Run failed" : null);
+}
+
+function rootSummaryFailureRunId(summary: ThreadRootSummary | undefined): string | null {
+  return summary?.runs.find((run) => run.status === "failed" && run.error)?.id ?? null;
+}
+
+function rootSummaryStateLabel(state: ThreadRootSummary["state"]): string {
+  switch (state) {
+    case "running":
+      return "Working";
+    case "waiting_input":
+      return "Waiting for your input";
+    case "waiting_takeover":
+      return "Waiting for takeover";
+    case "queued":
+      return "Queued";
+    case "failed":
+      return "Failed";
+    case "completed":
+      return "Completed";
+    case "cancelled":
+      return "Stopped";
+    case "mixed":
+      return "Mixed activity";
+    case "silent":
+      return "No run yet";
+  }
+}
+
+function retryableRootText(message: ThreadMessage): string {
+  return message.blocks
+    .map((block) => (block.kind === "text" || block.kind === "channel_message" ? block.text : ""))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function RootSummaryView({
+  summary,
+  compact = false,
+  resolveParticipantName,
+  onStopRoot,
+  onRetryRoot,
+}: {
+  summary: ThreadRootSummary | undefined;
+  compact?: boolean;
+  resolveParticipantName: (botId: string) => string | undefined;
+  onStopRoot?: () => void | Promise<void>;
+  onRetryRoot?: () => void | Promise<void>;
+}) {
+  if (!summary) return null;
+  if (
+    summary.state === "silent" &&
+    summary.runs.length === 0 &&
+    summary.participantBotIds.length === 0
+  ) {
+    return null;
+  }
+  const active = rootSummaryHasActiveRun(summary);
+  const failure = rootSummaryFailure(summary);
+  const names = [...new Set(summary.participantBotIds.map(resolveParticipantName).filter(Boolean))];
+  const participantLabel = names.length
+    ? names.join(", ")
+    : summary.runs.length
+      ? "Agents"
+      : "No agent run";
+  const replyLabel = `${summary.replyCount} ${summary.replyCount === 1 ? "reply" : "replies"}`;
+  return (
+    <div
+      data-testid={`slack-root-summary-${summary.rootMessageId}`}
+      data-root-state={summary.state}
+      className={cn(
+        "mt-2 rounded-lg border border-border/80 bg-muted/35 text-[12px] text-muted-foreground",
+        compact ? "px-2.5 py-1.5" : "mx-3 mb-3 px-3 py-2.5",
+      )}
+    >
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span
+          data-testid={`slack-root-status-${summary.rootMessageId}`}
+          className={cn(
+            "font-medium",
+            active && "text-foreground",
+            failure && "text-foreground",
+            summary.state === "completed" && !failure && "text-foreground/75",
+          )}
+        >
+          {rootSummaryStateLabel(summary.state)}
+        </span>
+        <span aria-hidden className="text-border">
+          ·
+        </span>
+        <span data-testid={`slack-root-participants-${summary.rootMessageId}`}>
+          {participantLabel}
+        </span>
+        <span aria-hidden className="text-border">
+          ·
+        </span>
+        <span>{replyLabel}</span>
+      </div>
+      {failure ? (
+        <p
+          role="alert"
+          data-testid={`slack-root-failure-${summary.rootMessageId}`}
+          className="mt-1 break-words text-foreground"
+        >
+          Failure: {failure}
+        </p>
+      ) : null}
+      {active && onStopRoot ? (
+        <button
+          type="button"
+          data-testid={`slack-root-stop-${summary.rootMessageId}`}
+          aria-label={`Stop root ${summary.rootMessageId}`}
+          onClick={() => void onStopRoot()}
+          className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-md border border-border px-2.5 font-medium text-foreground/75 hover:bg-accent hover:text-foreground"
+        >
+          <Square size={11} strokeWidth={0} fill="currentColor" />
+          Stop this root
+        </button>
+      ) : null}
+      {!active && failure && onRetryRoot ? (
+        <button
+          type="button"
+          data-testid={`slack-root-retry-${summary.rootMessageId}`}
+          aria-label={`Retry root ${summary.rootMessageId}`}
+          onClick={() => void onRetryRoot()}
+          className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-md border border-border px-2.5 font-medium text-foreground/75 hover:bg-accent hover:text-foreground"
+        >
+          <ArrowUp size={13} strokeWidth={2} />
+          Retry in thread
+        </button>
+      ) : null}
+    </div>
+  );
+}
 
 const Composer = memo(function Composer({
   activeName,
@@ -4912,14 +5301,17 @@ const Composer = memo(function Composer({
   function send() {
     if (!canSend || sending || disabled) return;
     const text = serializeComposerPrompt(draft, selectedSkill, selectedMentions);
-    setDraft("");
-    setMentionQuery(null);
-    setMentionHighlightIndex(0);
-    setSlashQuery(null);
-    setSelectedSkill(null);
     const mentions = selectedMentions;
-    setSelectedMentions([]);
-    void onSend(text, mentions);
+    void onSend(text, mentions)
+      .then(() => {
+        setDraft("");
+        setMentionQuery(null);
+        setMentionHighlightIndex(0);
+        setSlashQuery(null);
+        setSelectedSkill(null);
+        setSelectedMentions([]);
+      })
+      .catch(() => undefined);
   }
 
   function handleDragEnter(event: DragEvent<HTMLFieldSetElement>) {
@@ -5008,7 +5400,10 @@ const Composer = memo(function Composer({
           ref={runErrorRef}
           role="alert"
           data-testid="composer-error"
-          className="mb-3 flex items-center gap-2 rounded-[14px] border border-destructive/40 bg-destructive/10 px-4 py-2 text-[13px] text-destructive"
+          className={cn(
+            "mb-3 flex items-center gap-2 rounded-[14px] border border-destructive/40 bg-destructive/10 px-4 py-2 text-[13px]",
+            variant === "slack" ? "text-foreground" : "text-destructive",
+          )}
         >
           <span className="min-w-0 flex-1">{sendError ?? runError}</span>
           <button
@@ -5019,7 +5414,10 @@ const Composer = memo(function Composer({
               onDismissError();
               window.requestAnimationFrame(() => textareaRef.current?.focus());
             }}
-            className="shrink-0 text-destructive hover:text-foreground"
+            className={cn(
+              "shrink-0 hover:text-foreground",
+              variant === "slack" ? "text-foreground" : "text-destructive",
+            )}
           >
             <X size={13} strokeWidth={2} />
           </button>
@@ -5178,7 +5576,7 @@ const Composer = memo(function Composer({
           aria-label={t`Attach file`}
           disabled={disabled}
           onClick={() => fileInputRef.current?.click()}
-          className="rounded-full text-foreground/75"
+          className={cn("rounded-full text-foreground/75", variant === "slack" && "size-11")}
         >
           <Plus size={17} strokeWidth={1.8} />
         </Button>
@@ -5302,7 +5700,7 @@ const Composer = memo(function Composer({
             title={t`Voice`}
             disabled={disabled}
             onClick={onVoice}
-            className="rounded-full text-foreground/75"
+            className={cn("rounded-full text-foreground/75", variant === "slack" && "size-11")}
           >
             <Mic size={16} strokeWidth={1.8} />
           </Button>
@@ -5314,7 +5712,7 @@ const Composer = memo(function Composer({
               aria-label={t`Send`}
               disabled={sending || !canSend || disabled}
               onClick={send}
-              className="size-10 rounded-full"
+              className={cn(variant === "slack" ? "size-11" : "size-10", "rounded-full")}
             >
               <ArrowUp size={18} strokeWidth={2} />
             </Button>
@@ -5324,7 +5722,10 @@ const Composer = memo(function Composer({
               aria-label={t`Stop`}
               disabled={sending}
               onClick={() => void onStop()}
-              className="size-10 rounded-full text-foreground/75"
+              className={cn(
+                variant === "slack" ? "size-11" : "size-10",
+                "rounded-full text-foreground/75",
+              )}
             >
               <Square size={12} strokeWidth={0} fill="currentColor" />
             </Button>
@@ -5335,7 +5736,7 @@ const Composer = memo(function Composer({
             aria-label={t`Send`}
             disabled={sending || !canSend || disabled}
             onClick={send}
-            className="size-9 rounded-full"
+            className={cn(variant === "slack" ? "size-11" : "size-9", "rounded-full")}
           >
             <ArrowUp size={18} strokeWidth={2} />
           </Button>

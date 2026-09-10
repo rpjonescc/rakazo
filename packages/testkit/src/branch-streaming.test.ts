@@ -19,7 +19,15 @@ describe("branch streaming", () => {
               sourceMessageId: `source-${i}`,
             }),
           },
-          message: { findFirst: vi.fn().mockResolvedValue({ threadRootMessageId: root }) },
+          message: {
+            findFirst: vi.fn(async (args: { where?: { id?: string } }) => {
+              const id = args.where?.id ?? `source-${i}`;
+              return {
+                id,
+                threadRootMessageId: id.startsWith("root-") ? null : root,
+              };
+            }),
+          },
           event: {
             create: vi.fn(async ({ data }) => ({
               ...data,

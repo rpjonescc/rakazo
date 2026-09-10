@@ -508,6 +508,511 @@ describeWithDatabase("optional Slack view thread persistence", () => {
     expect(quote.threadRootMessageId).toBeNull();
   });
 
+  it("rejects a new Slack root against busy Classic work without steering or writes", async () => {
+    const cookie = await signup(app, `busy-root-${stamp}@rakazo.test`, "Busy root");
+    const dmBot = await rpc<{ id: string }>(app, cookie, "bots/create", {
+      name: "Busy DM bot",
+    });
+    const channelBot = await rpc<{ id: string }>(app, cookie, "bots/create", {
+      name: "Busy channel bot",
+    });
+    const group = await rpc<{ id: string; threadId: string }>(app, cookie, "groups/create", {
+      name: "Busy channel",
+      botIds: [channelBot.id],
+    });
+
+    const makeBusyClassicRun = async (botId: string, threadId: string) => {
+      const bot = await prisma.bot.findUniqueOrThrow({
+        where: { id: botId },
+        include: { thread: true },
+      });
+      const source = await createThreadMessage(prisma, {
+        threadId,
+        role: "user",
+        blocks: [{ kind: "text", text: "classic source" }],
+      });
+      const task = await prisma.task.create({
+        data: {
+          spaceId: bot.spaceId,
+          botId,
+          threadId,
+          userId: bot.userId,
+          prompt: "classic busy work",
+          status: "running",
+        },
+      });
+      return prisma.run.create({
+        data: {
+          spaceId: bot.spaceId,
+          botId,
+          threadId,
+          taskId: task.id,
+          userId: bot.userId,
+          status: "running",
+          trigger: "user",
+          sourceMessageId: source.id,
+        },
+      });
+    };
+    const counts = async (threadId: string) =>
+      Promise.all([
+        prisma.message.count({ where: { threadId } }),
+        prisma.task.count({ where: { threadId } }),
+        prisma.run.count({ where: { threadId } }),
+        prisma.steeringMessage.count({ where: { message: { threadId } } }),
+      ]);
+
+    const dmThread = (
+      await prisma.bot.findUniqueOrThrow({ where: { id: dmBot.id }, include: { thread: true } })
+    ).thread.id;
+    await makeBusyClassicRun(dmBot.id, dmThread);
+    const dmBefore = await counts(dmThread);
+    const dmRejected = await raw(app, cookie, "threads/send", {
+      botId: dmBot.id,
+      text: "new Slack DM root",
+      conversationMode: "thread",
+      clientNonce: `busy-dm-${stamp}`,
+    });
+    expect(dmRejected.status, await dmRejected.clone().text()).toBe(409);
+    expect(await counts(dmThread)).toEqual(dmBefore);
+
+    await makeBusyClassicRun(channelBot.id, group.threadId);
+    const channelBefore = await counts(group.threadId);
+    const channelRejected = await raw(app, cookie, "threads/send", {
+      groupId: group.id,
+      text: "new Slack channel root",
+      conversationMode: "thread",
+      clientNonce: `busy-channel-${stamp}`,
+    });
+    expect(channelRejected.status, await channelRejected.clone().text()).toBe(409);
+    expect(await counts(group.threadId)).toEqual(channelBefore);
+
+    const cleanBot = await rpc<{ id: string }>(app, cookie, "bots/create", {
+      name: "Root then Classic",
+    });
+    const cleanThread = (
+      await prisma.bot.findUniqueOrThrow({ where: { id: cleanBot.id }, include: { thread: true } })
+    ).thread.id;
+    const rootSend = await rpc<{ runId: string; messageId: string }>(app, cookie, "threads/send", {
+      botId: cleanBot.id,
+      text: "new Slack root",
+      conversationMode: "thread",
+      clientNonce: `root-first-${stamp}`,
+    });
+    await expect
+      .poll(() => prisma.run.findUnique({ where: { id: rootSend.runId } }), { timeout: 10000 })
+      .toMatchObject({ status: "completed", conversationRootMessageId: rootSend.messageId });
+    await prisma.run.update({ where: { id: rootSend.runId }, data: { status: "running" } });
+    const rootBefore = await counts(cleanThread);
+    const classicRejected = await raw(app, cookie, "threads/send", {
+      botId: cleanBot.id,
+      text: "classic message while root is busy",
+      clientNonce: `classic-after-root-${stamp}`,
+    });
+    expect(classicRejected.status, await classicRejected.clone().text()).toBe(409);
+    expect(await counts(cleanThread)).toEqual(rootBefore);
+  });
+
+  it("persists an explicit Slack conversation root for DMs and channels and replays it", async () => {
+    const cookie = await signup(app, `thread-root-${stamp}@rakazo.test`, "Thread root owner");
+    const dmBot = await rpc<{ id: string }>(app, cookie, "bots/create", { name: "DM bot" });
+    const channelBot = await rpc<{ id: string }>(app, cookie, "bots/create", {
+      name: "Channel bot",
+    });
+    const group = await rpc<{ id: string; threadId: string }>(app, cookie, "groups/create", {
+      name: "Thread channel",
+      botIds: [channelBot.id],
+    });
+
+    const dmNonce = `thread-mode-dm-${stamp}`;
+    const dm = await rpc<{
+      messageId: string;
+      rootMessageId: string;
+      runId: string;
+      runIds: string[];
+    }>(app, cookie, "threads/send", {
+      botId: dmBot.id,
+      text: "DM root",
+      conversationMode: "thread",
+      clientNonce: dmNonce,
+    });
+    expect(dm.rootMessageId).toBe(dm.messageId);
+    expect(dm.runIds).toEqual([dm.runId]);
+    await expect
+      .poll(() => prisma.run.findUnique({ where: { id: dm.runId } }), { timeout: 10000 })
+      .toMatchObject({ status: "completed", conversationRootMessageId: dm.messageId });
+    const dmThread = await prisma.bot.findUniqueOrThrow({ where: { id: dmBot.id } });
+    expect(
+      await prisma.message.count({
+        where: { threadId: dmThread.threadId, clientNonce: dmNonce },
+      }),
+    ).toBe(1);
+
+    const replay = await rpc<{ messageId: string; rootMessageId: string; runId: string }>(
+      app,
+      cookie,
+      "threads/send",
+      {
+        botId: dmBot.id,
+        text: "DM root",
+        conversationMode: "thread",
+        clientNonce: dmNonce,
+      },
+    );
+    expect(replay).toMatchObject({
+      messageId: dm.messageId,
+      rootMessageId: dm.messageId,
+      runId: dm.runId,
+    });
+
+    const channel = await rpc<{
+      messageId: string;
+      rootMessageId: string;
+      runId: string;
+      runIds: string[];
+    }>(app, cookie, "threads/send", {
+      groupId: group.id,
+      text: "Channel root",
+      conversationMode: "thread",
+      clientNonce: `thread-mode-channel-${stamp}`,
+    });
+    expect(channel.rootMessageId).toBe(channel.messageId);
+    expect(channel.runIds).toEqual([channel.runId]);
+    await expect
+      .poll(() => prisma.run.findUnique({ where: { id: channel.runId } }), { timeout: 10000 })
+      .toMatchObject({ status: "completed", conversationRootMessageId: channel.messageId });
+    const channelMessages = await prisma.message.findMany({
+      where: { threadId: group.threadId },
+      orderBy: { seq: "asc" },
+    });
+    expect(
+      channelMessages.find((message) => message.id === channel.messageId)?.threadRootMessageId,
+    ).toBeNull();
+    expect(
+      channelMessages
+        .filter((message) => message.runId && message.role === "bot")
+        .some((message) => message.threadRootMessageId === channel.messageId),
+    ).toBe(true);
+  });
+
+  it("paginates conversation roots independently from dense replies", async () => {
+    const cookie = await signup(app, `root-pages-${stamp}@rakazo.test`, "Root pages");
+    const bot = await rpc<{ id: string }>(app, cookie, "bots/create", { name: "Root pages bot" });
+    const botRow = await prisma.bot.findUniqueOrThrow({
+      where: { id: bot.id },
+      include: { thread: true },
+    });
+    const threadId = botRow.thread.id;
+    const roots = [];
+    for (let index = 0; index < 120; index += 1) {
+      roots.push(
+        await createThreadMessage(prisma, {
+          threadId,
+          role: "user",
+          blocks: [{ kind: "text", text: `root-${index}` }],
+        }),
+      );
+    }
+    const replyRows = [];
+    for (let index = 0; index < 55; index += 1) {
+      replyRows.push(
+        await createThreadMessage(prisma, {
+          threadId,
+          role: "user",
+          threadRootMessageId: roots[0]!.id,
+          blocks: [{ kind: "text", text: `reply-${index}` }],
+        }),
+      );
+    }
+    const summaryTask = await prisma.task.create({
+      data: {
+        spaceId: botRow.spaceId,
+        botId: bot.id,
+        threadId,
+        userId: botRow.userId,
+        prompt: "summary failure",
+        status: "failed",
+      },
+    });
+    const summaryRun = await prisma.run.create({
+      data: {
+        spaceId: botRow.spaceId,
+        botId: bot.id,
+        threadId,
+        taskId: summaryTask.id,
+        userId: botRow.userId,
+        status: "failed",
+        trigger: "user",
+        sourceMessageId: roots[0]!.id,
+        conversationRootMessageId: roots[0]!.id,
+        error: "old root failed",
+      },
+    });
+
+    const first = await rpc<{
+      rootMessages: Array<{ id: string; replyCount?: number }>;
+      rootOlderCursor: number | null;
+    }>(app, cookie, "threads/get", { botId: bot.id, includeRoots: true });
+    expect(first.rootMessages).toHaveLength(100);
+    expect(first.rootMessages[0]?.id).toBe(roots[20]!.id);
+    expect(first.rootMessages.at(-1)?.id).toBe(roots[119]!.id);
+    expect(first.rootMessages[0]?.replyCount).toBe(0);
+    expect(first.rootOlderCursor).toBe(roots[20]!.seq);
+
+    const older = await rpc<{
+      messages: Array<{ id: string }>;
+      olderCursor: number | null;
+      rootSummaries: Array<{
+        rootMessageId: string;
+        participantBotIds: string[];
+        replyCount: number;
+        state: string;
+        runs: Array<{
+          id: string;
+          botId: string;
+          taskId: string;
+          status: string;
+          error: string | null;
+        }>;
+      }>;
+    }>(app, cookie, "threads/messages", {
+      botId: bot.id,
+      rootsOnly: true,
+      before: first.rootOlderCursor,
+    });
+    expect(older.messages.map((message) => message.id)).toEqual(
+      roots.slice(0, 20).map((root) => root.id),
+    );
+    expect(older.olderCursor).toBeNull();
+    expect(older.rootSummaries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          rootMessageId: roots[0]!.id,
+          participantBotIds: [bot.id],
+          replyCount: 55,
+          state: "failed",
+          runs: [
+            expect.objectContaining({
+              id: summaryRun.id,
+              botId: bot.id,
+              taskId: summaryTask.id,
+              status: "failed",
+              error: "old root failed",
+            }),
+          ],
+        }),
+      ]),
+    );
+
+    const replies = await rpc<{
+      messages: Array<{ id: string }>;
+      olderCursor: number | null;
+      replyCount: number;
+    }>(app, cookie, "threads/replies", {
+      botId: bot.id,
+      rootMessageId: roots[0]!.id,
+      limit: 50,
+    });
+    expect(replies.replyCount).toBe(55);
+    expect(replies.messages).toHaveLength(50);
+    expect(replies.olderCursor).toBeTruthy();
+    const tail = await rpc<{ messages: Array<{ id: string }>; olderCursor: number | null }>(
+      app,
+      cookie,
+      "threads/replies",
+      {
+        botId: bot.id,
+        rootMessageId: roots[0]!.id,
+        limit: 50,
+        before: replies.olderCursor,
+      },
+    );
+    expect(tail.messages).toHaveLength(5);
+    expect(tail.olderCursor).toBeNull();
+    expect([...tail.messages, ...replies.messages].map((message) => message.id)).toEqual(
+      replyRows.map((message) => message.id),
+    );
+  });
+
+  it("stops only the selected root run and refreshes exact root summaries", async () => {
+    const cookie = await signup(app, `root-stop-${stamp}@rakazo.test`, "Root stop");
+    const bot = await rpc<{ id: string }>(app, cookie, "bots/create", { name: "Root stop bot" });
+    const botRow = await prisma.bot.findUniqueOrThrow({
+      where: { id: bot.id },
+      include: { thread: true },
+    });
+    const threadId = botRow.thread.id;
+    const rootA = await createThreadMessage(prisma, {
+      threadId,
+      role: "user",
+      blocks: [{ kind: "text", text: "root A" }],
+    });
+    const rootB = await createThreadMessage(prisma, {
+      threadId,
+      role: "user",
+      blocks: [{ kind: "text", text: "root B" }],
+    });
+    const createActiveRun = async (rootMessageId: string, label: string) => {
+      const task = await prisma.task.create({
+        data: {
+          spaceId: botRow.spaceId,
+          botId: bot.id,
+          threadId,
+          userId: botRow.userId,
+          prompt: label,
+          status: "running",
+        },
+      });
+      return prisma.run.create({
+        data: {
+          spaceId: botRow.spaceId,
+          botId: bot.id,
+          threadId,
+          taskId: task.id,
+          userId: botRow.userId,
+          status: "running",
+          trigger: "user",
+          sourceMessageId: rootMessageId,
+          conversationRootMessageId: rootMessageId,
+        },
+      });
+    };
+    const runA = await createActiveRun(rootA.id, "run A");
+    const runB = await createActiveRun(rootB.id, "run B");
+
+    const before = await rpc<{
+      rootSummaries: Array<{ rootMessageId: string; state: string; runs: Array<{ id: string }> }>;
+    }>(app, cookie, "threads/get", { botId: bot.id, includeRoots: true });
+    expect(before.rootSummaries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          rootMessageId: rootA.id,
+          state: "running",
+          runs: [expect.objectContaining({ id: runA.id })],
+        }),
+        expect.objectContaining({
+          rootMessageId: rootB.id,
+          state: "running",
+          runs: [expect.objectContaining({ id: runB.id })],
+        }),
+      ]),
+    );
+
+    await rpc(app, cookie, "threads/stop", { botId: bot.id, rootMessageId: rootA.id });
+
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: runA.id } })).toMatchObject({
+      status: "cancelled",
+    });
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: runB.id } })).toMatchObject({
+      status: "running",
+    });
+    const after = await rpc<{
+      rootSummaries: Array<{ rootMessageId: string; state: string; runs: Array<{ id: string }> }>;
+    }>(app, cookie, "threads/get", { botId: bot.id, includeRoots: true });
+    expect(after.rootSummaries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          rootMessageId: rootA.id,
+          state: "cancelled",
+          runs: [expect.objectContaining({ id: runA.id })],
+        }),
+        expect.objectContaining({
+          rootMessageId: rootB.id,
+          state: "running",
+          runs: [expect.objectContaining({ id: runB.id })],
+        }),
+      ]),
+    );
+  });
+
+  it("retries only the failed group agent in its original root", async () => {
+    const cookie = await signup(app, `group-retry-${stamp}@rakazo.test`, "Group retry");
+    const alpha = await rpc<{ id: string }>(app, cookie, "bots/create", {
+      name: "Retry Alpha",
+      notifyOnFinish: false,
+    });
+    const beta = await rpc<{ id: string }>(app, cookie, "bots/create", {
+      name: "Retry Beta",
+      notifyOnFinish: false,
+    });
+    const group = await rpc<{ id: string; threadId: string }>(app, cookie, "groups/create", {
+      name: "Retry channel",
+      botIds: [alpha.id, beta.id],
+    });
+    const root = await createThreadMessage(prisma, {
+      threadId: group.threadId,
+      role: "user",
+      blocks: [{ kind: "text", text: "Failed group root" }],
+    });
+    const alphaRow = await prisma.bot.findUniqueOrThrow({ where: { id: alpha.id } });
+    const task = await prisma.task.create({
+      data: {
+        spaceId: alphaRow.spaceId,
+        botId: alpha.id,
+        threadId: group.threadId,
+        userId: alphaRow.userId,
+        prompt: "failed group task",
+        status: "cancelled",
+      },
+    });
+    const failedRun = await prisma.run.create({
+      data: {
+        spaceId: alphaRow.spaceId,
+        botId: alpha.id,
+        threadId: group.threadId,
+        taskId: task.id,
+        userId: alphaRow.userId,
+        status: "cancelled",
+        trigger: "user",
+        sourceMessageId: root.id,
+        conversationRootMessageId: root.id,
+      },
+    });
+
+    const retry = await rpc<{
+      messageId: string;
+      rootMessageId: string;
+      runId: string;
+      runIds: string[];
+    }>(app, cookie, "threads/send", {
+      groupId: group.id,
+      text: "Retry failed group task",
+      mentions: [alpha.id],
+      replyToMessageId: root.id,
+      replyInThread: true,
+      retryRunId: failedRun.id,
+      clientNonce: `group-retry-send-${stamp}`,
+    });
+    expect(retry.rootMessageId).toBe(root.id);
+    expect(retry.runIds).toEqual([retry.runId]);
+    expect(retry.runId).not.toBe(failedRun.id);
+
+    const runs = await prisma.run.findMany({
+      where: { threadId: group.threadId },
+      select: { id: true, botId: true },
+    });
+    expect(runs).toHaveLength(2);
+    expect(runs.every((run) => run.botId === alpha.id)).toBe(true);
+    expect(runs.some((run) => run.botId === beta.id)).toBe(false);
+    expect(
+      await prisma.message.count({
+        where: { threadId: group.threadId, threadRootMessageId: null },
+      }),
+    ).toBe(1);
+    const replies = await rpc<ReplyPage>(app, cookie, "threads/replies", {
+      groupId: group.id,
+      rootMessageId: root.id,
+    });
+    expect(replies.rootMessage.id).toBe(root.id);
+    expect(
+      replies.messages.some(
+        (message) =>
+          message.blocks.some((block) => block.text === "Retry failed group task") &&
+          message.threadRootMessageId === root.id,
+      ),
+    ).toBe(true);
+  });
+
   it("keeps channel replies and explicit agent targeting in the selected branch", async () => {
     const cookie = await signup(app, `slack-channel-${stamp}@rakazo.test`, "Channel owner");
     const bots = [];

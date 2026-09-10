@@ -116,6 +116,68 @@ describe("thread event reduction", () => {
     expect(next.olderCursor).toBeNull();
   });
 
+  it("repairs a reconnect gap in root pages and preserves root summaries", () => {
+    const previous: ThreadSnapshot = {
+      ...snapshot([]),
+      rootMessages: [message("root-old-1", [], 10), message("root-old-2", [], 20)],
+      rootOlderCursor: null,
+      rootSummaries: [rootSummary("root-old-1"), rootSummary("root-old-2")],
+    };
+    const recent: ThreadSnapshot = {
+      ...snapshot([]),
+      rootMessages: [message("root-new-1", [], 100), message("root-new-2", [], 110)],
+      rootOlderCursor: 100,
+      rootSummaries: [rootSummary("root-new-1"), rootSummary("root-new-2")],
+    };
+
+    const withGap = mergeThreadSnapshot(previous, recent, true);
+    expect(withGap.rootMessages?.map((root) => root.id)).toEqual([
+      "root-old-1",
+      "root-old-2",
+      "root-new-1",
+      "root-new-2",
+    ]);
+    expect(withGap.rootOlderCursor).toBe(100);
+    expect(withGap.rootSummaries?.map((summary) => summary.rootMessageId)).toEqual([
+      "root-old-1",
+      "root-old-2",
+      "root-new-1",
+      "root-new-2",
+    ]);
+
+    const repaired = prependThreadMessagePage(
+      withGap,
+      {
+        threadId: "thread-1",
+        messages: [message("root-mid", [], 50)],
+        olderCursor: 20,
+        rootSummaries: [rootSummary("root-mid")],
+      },
+      true,
+    );
+    expect(repaired?.rootMessages?.map((root) => root.id)).toEqual([
+      "root-old-1",
+      "root-old-2",
+      "root-mid",
+      "root-new-1",
+      "root-new-2",
+    ]);
+    expect(repaired?.rootOlderCursor).toBe(20);
+
+    const refreshed = mergeThreadSnapshot(repaired, recent, true);
+    expect(refreshed.rootMessages?.map((root) => root.id)).toEqual([
+      "root-old-1",
+      "root-old-2",
+      "root-mid",
+      "root-new-1",
+      "root-new-2",
+    ]);
+    expect(refreshed.rootOlderCursor).toBe(20);
+    expect(
+      refreshed.rootSummaries?.find((summary) => summary.rootMessageId === "root-mid"),
+    ).toEqual(rootSummary("root-mid"));
+  });
+
   it("ignores a stale thread refresh that is behind the live cursor", () => {
     const live: ThreadSnapshot = {
       ...snapshot([
@@ -1455,6 +1517,16 @@ describe("computer event reduction", () => {
     expect(showInSidePanel(true)).toBe(false);
   });
 });
+
+function rootSummary(rootMessageId: string) {
+  return {
+    rootMessageId,
+    participantBotIds: [],
+    replyCount: 0,
+    state: "running" as const,
+    runs: [],
+  };
+}
 
 function snapshot(messages: ThreadMessage[], olderCursor: number | null = null): ThreadSnapshot {
   return {

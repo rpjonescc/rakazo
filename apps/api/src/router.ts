@@ -126,6 +126,7 @@ import {
   SpaceNotFoundError,
   selectSpaceModelPreference,
   selectSpaceVoicePreference,
+  summarizeThreadRoots,
   type ThreadEvents,
   touchGroupUpdatedAt,
 } from "@rakazo/db";
@@ -568,7 +569,7 @@ export function createRouter(deps: RouterDeps) {
       const [thread, routines] = active
         ? await Promise.all([
             resolveThreadTarget(deps.prisma, actor, { botId: active.id }).then((target) =>
-              threadSnapshot(deps, target),
+              threadSnapshot(deps, target, { includeRoots: true }),
             ),
             listRoutinesDto(deps, actor, active.id),
           ])
@@ -1223,11 +1224,11 @@ export function createRouter(deps: RouterDeps) {
       }),
       get: authed.threads.get.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
-        return threadSnapshot(deps, target);
+        return threadSnapshot(deps, target, { includeRoots: input.includeRoots });
       }),
       messages: authed.threads.messages.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
-        return loadMessagePage(
+        const page = await loadMessagePage(
           deps.prisma,
           target.threadId,
           input.before,
@@ -1235,7 +1236,18 @@ export function createRouter(deps: RouterDeps) {
           input.around,
           input.includePeerRuns,
           input.includePeerReceipts,
+          input.rootsOnly,
         );
+        return input.rootsOnly
+          ? {
+              ...page,
+              rootSummaries: await summarizeThreadRoots(
+                deps.prisma,
+                target.threadId,
+                page.messages,
+              ),
+            }
+          : page;
       }),
       replies: authed.threads.replies.handler(async ({ context, input }) => {
         try {
@@ -1305,7 +1317,7 @@ export function createRouter(deps: RouterDeps) {
       }),
       stop: authed.threads.stop.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
-        await stopThreadRuns(deps, context.actor, target);
+        await stopThreadRuns(deps, context.actor, target, input.rootMessageId);
         return { ok: true as const };
       }),
       clear: authed.threads.clear.handler(async ({ context, input }) => {

@@ -80,7 +80,6 @@ export async function spawnBot(
       initialMessage: {
         role: "system",
         blocks: [{ kind: "meta", text: `Created by ${input.spawnedBy.name}` }],
-        runId: input.runId,
       },
     });
   } catch (error) {
@@ -154,11 +153,14 @@ async function ensureSpawnRun(
 
   try {
     return await prisma.$transaction(async (tx) => {
-      await createThreadMessageInTransaction(tx, {
+      // The prompt belongs to the child thread. The parent run is only the
+      // cause of the spawn; it must never be written as a foreign-thread
+      // history owner. Create the child prompt first, then attach the child
+      // run to that message once the run exists.
+      const message = await createThreadMessageInTransaction(tx, {
         threadId: input.threadId,
         role: "user",
         blocks: [{ kind: "text", text: input.prompt }],
-        runId: input.sourceRunId,
       });
       const task = await tx.task.create({
         data: {
@@ -170,7 +172,7 @@ async function ensureSpawnRun(
           status: "queued",
         },
       });
-      return tx.run.create({
+      const run = await tx.run.create({
         data: {
           spaceId: input.spaceId,
           botId: input.botId,
@@ -180,8 +182,12 @@ async function ensureSpawnRun(
           status: "queued",
           trigger: "spawn",
           clientNonce,
+          sourceMessageId: message.id,
+          conversationRootMessageId: message.id,
         },
       });
+      await tx.message.update({ where: { id: message.id }, data: { runId: run.id } });
+      return run;
     });
   } catch (error) {
     const winner = await prisma.run.findUnique({ where });

@@ -59,7 +59,16 @@ function createDeps(
         txCalls.runCreate.push(data);
         return { id: "run-wake", ...(data as object) };
       }),
-      findUnique: vi.fn(async () => ({ id: "run-1", status: "running" })),
+      findUnique: vi.fn(async ({ where }: { where?: { id?: string } }) => {
+        const wake = where?.id === "run-wake";
+        return {
+          id: wake ? "run-wake" : "run-1",
+          threadId: wake ? "thread-2" : "thread-1",
+          sourceMessageId: null,
+          conversationRootMessageId: null,
+          status: "running",
+        };
+      }),
     },
     task: {
       create: vi.fn(async ({ data }: { data: unknown }) => {

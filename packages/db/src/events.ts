@@ -20,7 +20,9 @@ import {
   assertRunCanWriteHistory,
   createThreadMessageInTransaction,
   RunHistoryWriteError,
+  resolveConversationRootMessageId,
 } from "./messages.js";
+import { IsolationError } from "./scope.js";
 import { withTransactionRetry } from "./transaction-retry.js";
 
 const EVENT_BATCH_SIZE = 200;
@@ -1107,6 +1109,16 @@ async function createSteeringContinuation(
     orderBy: [{ message: { seq: "asc" } }, { id: "asc" }],
   });
   if (pending.length === 0) return null;
+  const parentRun = await tx.run.findUnique({
+    where: { id: input.runId },
+    select: { threadId: true, sourceMessageId: true, conversationRootMessageId: true },
+  });
+  if (input.runId && parentRun?.threadId && parentRun.threadId !== input.threadId) {
+    throw new IsolationError();
+  }
+  const conversationRootMessageId = parentRun
+    ? await resolveConversationRootMessageId(tx, parentRun)
+    : null;
   const last = pending.at(-1)!;
   const task = await tx.task.create({
     data: {
@@ -1128,6 +1140,7 @@ async function createSteeringContinuation(
       status: "queued",
       trigger: "follow_up",
       sourceMessageId: last.message.id,
+      conversationRootMessageId: conversationRootMessageId ?? undefined,
     },
   });
   await tx.steeringMessage.updateMany({
@@ -1141,6 +1154,13 @@ export async function appendEventInTransaction(
   tx: Prisma.TransactionClient,
   input: AppendEventInput,
 ) {
+  if (input.runId) {
+    const run = await tx.run.findUnique({
+      where: { id: input.runId },
+      select: { threadId: true },
+    });
+    if (run?.threadId && run.threadId !== input.threadId) throw new IsolationError();
+  }
   const thread = await tx.thread.update({
     where: { id: input.threadId },
     data: { nextEventSeq: { increment: 1 } },
@@ -1163,6 +1183,7 @@ export async function appendEventInTransaction(
       where: { id: messageId, threadId: input.threadId },
       select: { replyToMessageId: true, threadRootMessageId: true },
     });
+    if (!message) throw new IsolationError();
     if (message?.replyToMessageId || message?.threadRootMessageId) {
       payload = {
         ...payload,
@@ -1176,17 +1197,16 @@ export async function appendEventInTransaction(
   if (!messageId && input.runId) {
     const run = await tx.run.findUnique({
       where: { id: input.runId },
-      select: { threadId: true, sourceMessageId: true },
+      select: { threadId: true, sourceMessageId: true, conversationRootMessageId: true },
     });
-    const source =
-      run?.threadId === input.threadId && run.sourceMessageId
-        ? await tx.message.findFirst({
-            where: { id: run.sourceMessageId, threadId: input.threadId },
-            select: { threadRootMessageId: true },
-          })
-        : null;
+    if (run?.threadId && run.threadId !== input.threadId) throw new IsolationError();
+    const root =
+      run?.threadId === input.threadId ? await resolveConversationRootMessageId(tx, run) : null;
     const { threadRootMessageId: _untrustedRoot, ...rest } = payload;
-    payload = source ? { ...rest, threadRootMessageId: source.threadRootMessageId } : rest;
+    payload =
+      run?.sourceMessageId || run?.conversationRootMessageId
+        ? { ...rest, threadRootMessageId: root }
+        : rest;
   }
   // Unpaired UTF-16 surrogates (e.g. a split emoji high half) are invalid JSON for Postgres.
   const sanitizedPayload = sanitizeJsonValue(payload);

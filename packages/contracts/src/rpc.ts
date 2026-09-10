@@ -120,6 +120,10 @@ const threadSendInput = threadTarget
       .optional(),
     replyToMessageId: Id.optional(),
     replyInThread: z.boolean().optional(),
+    /** Explicit new-conversation intent used by the Slack presentation. */
+    conversationMode: z.literal("thread").optional(),
+    /** Identifies the terminal run whose failed agent should be retried in its root. */
+    retryRunId: Id.optional(),
     clientNonce: z.string().min(1).max(200).optional(),
   })
   .superRefine((input, ctx) => {
@@ -130,6 +134,20 @@ const threadSendInput = threadTarget
         code: "custom",
         message: "Provide text or at least one attachment",
         path: ["text"],
+      });
+    }
+    if (input.conversationMode === "thread" && (input.replyInThread || input.replyToMessageId)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "A new thread conversation cannot also target an existing reply",
+        path: ["conversationMode"],
+      });
+    }
+    if (input.retryRunId && (!input.replyInThread || !input.replyToMessageId)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "A run retry must target its existing thread",
+        path: ["retryRunId"],
       });
     }
   });
@@ -257,13 +275,16 @@ export const appContract = {
         cursor: z.number().int().min(-1),
       }),
     ),
-    get: oc.input(threadTarget).output(ThreadSnapshotSchema),
+    get: oc
+      .input(threadTarget.safeExtend({ includeRoots: z.boolean().optional() }))
+      .output(ThreadSnapshotSchema),
     messages: oc
       .input(
         threadTarget.safeExtend({
           before: z.number().int().nonnegative().optional(),
           includePeerRuns: z.boolean().optional(),
           includePeerReceipts: z.boolean().optional(),
+          rootsOnly: z.boolean().optional(),
           around: z
             .object({
               messageId: Id.optional(),
@@ -288,6 +309,8 @@ export const appContract = {
       .output(eventIterator(ProductEventSchema)),
     send: oc.input(threadSendInput).output(
       z.object({
+        messageId: Id,
+        rootMessageId: Id.optional(),
         taskId: Id,
         runId: Id,
         seq: z.number().int(),
@@ -302,7 +325,9 @@ export const appContract = {
         }),
       )
       .output(z.object({ ok: z.literal(true) })),
-    stop: oc.input(threadTarget).output(z.object({ ok: z.literal(true) })),
+    stop: oc
+      .input(threadTarget.safeExtend({ rootMessageId: Id.optional() }))
+      .output(z.object({ ok: z.literal(true) })),
     followUp: oc
       .input(threadTarget.safeExtend({ text: z.string().min(1) }))
       .output(z.object({ ok: z.literal(true) })),

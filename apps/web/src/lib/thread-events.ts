@@ -12,6 +12,7 @@ import {
   isRunTerminalEvent,
   mergeThreadHistory,
   prependThreadHistoryPage,
+  prependThreadRootHistoryPage,
   progressMessageId,
   reduceLiveMessageBlocks,
   runFailureError,
@@ -237,7 +238,18 @@ export function reconcileRefreshedThread(
 export function prependThreadMessagePage(
   prev: ThreadSnapshot | null,
   page: ThreadMessagePage,
+  rootsOnly = false,
 ): ThreadSnapshot | null {
+  if (rootsOnly) {
+    return prependThreadRootHistoryPage(prev, {
+      threadId: page.threadId,
+      messages: page.messages,
+      olderCursor: page.olderCursor,
+      rootMessages: page.messages,
+      rootOlderCursor: page.olderCursor,
+      rootSummaries: page.rootSummaries,
+    });
+  }
   return prependThreadHistoryPage(prev, page);
 }
 
@@ -270,6 +282,9 @@ export function reduceThreadSnapshot(
       cursor: event.seq,
       messages: [],
       olderCursor: null,
+      rootMessages: [],
+      rootOlderCursor: null,
+      rootSummaries: [],
       run: null,
       activeRuns: [],
     };
@@ -532,9 +547,71 @@ export function reduceThreadSnapshot(
               : message,
           )
         : without;
-    return { ...prev, cursor: event.seq, messages: upsertMessageById(withReplyCount, next) };
+    const rootMessages = updateRootMessages(
+      prev.rootMessages,
+      next,
+      event.type === "thread.message.created",
+      alreadyPresent,
+    );
+    const rootSummaries = updateRootSummaries(
+      prev.rootSummaries,
+      next,
+      event.type === "thread.message.created",
+      alreadyPresent,
+    );
+    return {
+      ...prev,
+      cursor: event.seq,
+      messages: upsertMessageById(withReplyCount, next),
+      ...(rootMessages ? { rootMessages } : {}),
+      ...(rootSummaries ? { rootSummaries } : {}),
+    };
   }
   return prev;
+}
+
+function updateRootMessages(
+  previous: ThreadSnapshot["rootMessages"],
+  next: ThreadMessage,
+  created: boolean,
+  alreadyPresent: boolean,
+) {
+  if (!previous) return previous;
+  if (!next.threadRootMessageId) return upsertMessageById(previous, next);
+  if (alreadyPresent || !created) return previous;
+  return previous.map((root) =>
+    root.id === next.threadRootMessageId
+      ? { ...root, replyCount: (root.replyCount ?? 0) + 1 }
+      : root,
+  );
+}
+
+function updateRootSummaries(
+  previous: ThreadSnapshot["rootSummaries"],
+  next: ThreadMessage,
+  created: boolean,
+  alreadyPresent: boolean,
+) {
+  if (!previous) return previous;
+  if (!next.threadRootMessageId) {
+    if (previous.some((summary) => summary.rootMessageId === next.id)) return previous;
+    return [
+      ...previous,
+      {
+        rootMessageId: next.id,
+        participantBotIds: [],
+        replyCount: next.replyCount ?? 0,
+        state: "silent" as const,
+        runs: [],
+      },
+    ];
+  }
+  if (alreadyPresent || !created) return previous;
+  return previous.map((summary) =>
+    summary.rootMessageId === next.threadRootMessageId
+      ? { ...summary, replyCount: summary.replyCount + 1 }
+      : summary,
+  );
 }
 
 function updateMemberStatus(

@@ -30,9 +30,18 @@ function harness(
     run: {
       findFirst: vi.fn(async () => ({
         id: run.id,
+        threadId: run.threadId,
+        sourceMessageId: null,
+        conversationRootMessageId: null,
         sourceMessage: { blocks: sourceBlocks },
       })),
-      findUnique: vi.fn(async () => ({ status: "running" })),
+      findUnique: vi.fn(async () => ({
+        id: run.id,
+        threadId: run.threadId,
+        sourceMessageId: null,
+        conversationRootMessageId: null,
+        status: "running",
+      })),
       create: runCreate,
     },
     message: {

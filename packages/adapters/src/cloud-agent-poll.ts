@@ -315,6 +315,8 @@ async function finishPoll(
             status: "queued",
             trigger: "cloud_agent",
             clientNonce: `cloud-agent-wake-run:${agent.id}:${saved.generation}`,
+            sourceMessageId: agent.messageId ?? undefined,
+            conversationRootMessageId: message?.threadRootMessageId ?? undefined,
           },
         });
         await tx.cloudAgent.update({

@@ -142,6 +142,69 @@ describe("spawned bot creation", () => {
     });
     createReposSpy.mockRestore();
   });
+
+  it("anchors a spawned prompt to the child run and never the parent thread", async () => {
+    const createBot = vi.fn().mockResolvedValue({
+      id: "child-3",
+      name: "Researcher",
+      title: "",
+      threadId: "thread-child",
+    });
+    const messageCreate = vi.fn().mockResolvedValue({ id: "child-prompt" });
+    const messageUpdate = vi.fn().mockResolvedValue({ id: "child-prompt" });
+    const runCreate = vi.fn().mockResolvedValue({ id: "child-run-3" });
+    const createReposSpy = vi.spyOn(await import("@rakazo/db"), "createRepos").mockReturnValue({
+      createBot,
+    } as unknown as ReturnType<typeof createRepos>);
+    const tx = {
+      thread: { update: vi.fn().mockResolvedValue({ nextMessageSeq: 1 }) },
+      message: { create: messageCreate, update: messageUpdate },
+      task: { create: vi.fn().mockResolvedValue({ id: "child-task-3" }) },
+      run: { create: runCreate },
+    };
+    const prisma = {
+      run: { findUnique: vi.fn().mockResolvedValue(null) },
+      $transaction: vi.fn(async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx)),
+    } as unknown as PrismaClient;
+    const enqueue = vi.fn().mockResolvedValue(undefined);
+
+    await spawnBot(
+      { prisma, jobs: { enqueue } as unknown as JobPublisher },
+      {
+        spawnedBy: {
+          id: "parent-1",
+          name: "Chief",
+          spaceId: "workspace-1",
+          userId: "user-1",
+        },
+        runId: "parent-run-3",
+        spawnKey: "tool-call-3",
+        name: "Researcher",
+        prompt: "Investigate the source material",
+      },
+    );
+
+    expect(messageCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ threadId: "thread-child", role: "user" }),
+      }),
+    );
+    expect(messageCreate.mock.calls[0]?.[0]?.data.runId).toBeUndefined();
+    expect(runCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          sourceMessageId: "child-prompt",
+          conversationRootMessageId: "child-prompt",
+        }),
+      }),
+    );
+    expect(messageUpdate).toHaveBeenCalledWith({
+      where: { id: "child-prompt" },
+      data: { runId: "child-run-3" },
+    });
+    expect(enqueue).toHaveBeenCalledOnce();
+    createReposSpy.mockRestore();
+  });
 });
 describe("spawned bot archival", () => {
   it("refuses when confirm_name does not match exactly", () => {

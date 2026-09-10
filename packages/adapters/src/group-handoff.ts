@@ -7,6 +7,7 @@ import {
   IsolationError,
   lockOwnedGroup,
   type PrismaClient,
+  resolveConversationRootMessageId,
   touchGroupUpdatedAt,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -53,10 +54,17 @@ export async function handoffToGroupBot(
           userId: run.userId,
           status: "running",
         },
-        select: { id: true, sourceMessage: { select: { blocks: true } } },
+        select: {
+          id: true,
+          threadId: true,
+          sourceMessageId: true,
+          conversationRootMessageId: true,
+          sourceMessage: { select: { blocks: true } },
+        },
       }),
     ]);
     if (!group || !activeSource) return { error: "source run is no longer active" } as const;
+    const conversationRootMessageId = await resolveConversationRootMessageId(tx, activeSource);
     if (!group.members.some((member) => member.bot.id === run.botId)) {
       return { error: "source bot is no longer a group member" } as const;
     }
@@ -153,6 +161,7 @@ export async function handoffToGroupBot(
         status: "queued",
         trigger: "follow_up",
         sourceMessageId: message.id,
+        conversationRootMessageId: conversationRootMessageId ?? undefined,
       },
     });
     const event = await appendEventInTransaction(tx, {

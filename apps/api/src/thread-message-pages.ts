@@ -5,7 +5,7 @@ import type {
   ThreadReplyPage,
 } from "@rakazo/contracts";
 import { isPeerReceiptBlocks } from "@rakazo/core";
-import { IsolationError, type Prisma, type PrismaClient } from "@rakazo/db";
+import { IsolationError, type Prisma, type PrismaClient, summarizeThreadRoots } from "@rakazo/db";
 
 export const THREAD_REPLY_PAGE_SIZE = 50;
 
@@ -19,7 +19,9 @@ export async function loadMessagePage(
   around?: { messageId?: string; seq?: number },
   includePeerRuns = false,
   includePeerReceipts = false,
+  rootsOnly = false,
 ): Promise<ThreadMessagePage> {
+  const rootFilter = rootsOnly ? { threadRootMessageId: null } : {};
   if (around) {
     let targetSeq = around.seq;
     if (targetSeq === undefined && around.messageId) {
@@ -34,13 +36,15 @@ export async function loadMessagePage(
       const minSeq = Math.max(0, targetSeq - half);
       const maxSeq = targetSeq + half;
       const rows = await prisma.message.findMany({
-        where: { threadId, seq: { gte: minSeq, lte: maxSeq } },
+        where: { threadId, ...rootFilter, seq: { gte: minSeq, lte: maxSeq } },
         orderBy: { seq: "asc" },
         take: pageSize,
       });
       const first = rows[0];
       const hasOlder = first
-        ? (await prisma.message.count({ where: { threadId, seq: { lt: first.seq } } })) > 0
+        ? (await prisma.message.count({
+            where: { threadId, ...rootFilter, seq: { lt: first.seq } },
+          })) > 0
         : false;
       // Peer text/activity stays out of the normal transcript (including the
       // around target). Receipts remain via withoutPeerRunMessages; full peer
@@ -59,6 +63,7 @@ export async function loadMessagePage(
     const rows = await prisma.message.findMany({
       where: {
         threadId,
+        ...rootFilter,
         ...(cursor === undefined ? {} : { seq: { lt: cursor } }),
       },
       orderBy: { seq: "desc" },
@@ -144,6 +149,7 @@ export async function loadReplyPage(
   const visibleRows = includePeerRuns ? pageRows : await withoutPeerRunMessages(prisma, pageRows);
   const [rootWithCount] = await attachReplyCounts(prisma, [root]);
   const repliesWithCounts = await attachReplyCounts(prisma, visibleRows);
+  const [rootSummary] = await summarizeThreadRoots(prisma, threadId, [rootWithCount!]);
 
   return {
     threadId,
@@ -151,6 +157,7 @@ export async function loadReplyPage(
     messages: repliesWithCounts.map(toThreadMessage),
     olderCursor: hasOlder ? (pageRows[0]?.seq ?? null) : null,
     replyCount,
+    rootSummary,
   };
 }
 

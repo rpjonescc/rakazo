@@ -25,6 +25,8 @@ import {
   lockOwnedGroup,
   type Prisma,
   type PrismaClient,
+  resolveConversationRootMessageId,
+  summarizeThreadRoots,
   type ThreadEvents,
   touchGroupUpdatedAt,
 } from "@rakazo/db";
@@ -59,6 +61,7 @@ const THREAD_MESSAGE_PAGE_SIZE = 100;
 const RUNS_NEEDING_CONTINUE = new Set(["queued"]);
 
 const STEERABLE_RUN_STATUSES = new Set(["queued", "leased", "running"]);
+const RETRYABLE_RUN_STATUSES = new Set(["failed", "cancelled"]);
 
 type MentionTargetInput = string | { kind: "bot" | "group" | "routine" | "connector"; id: string };
 
@@ -193,10 +196,19 @@ function sendEventRunIds(payload: Prisma.JsonValue | undefined): string[] {
   return Array.isArray(runIds) ? runIds.filter((id): id is string => typeof id === "string") : [];
 }
 
-function sendResult(message: { seq: number }, runs: Array<{ id: string; taskId: string }>) {
+function sendResult(
+  message: { id: string; seq: number; threadRootMessageId?: string | null },
+  runs: Array<{ id: string; taskId: string; conversationRootMessageId?: string | null }>,
+) {
   const first = runs[0];
   if (!first) throw new IsolationError("Send did not create a run");
+  const rootMessageId =
+    runs.find((run) => run.conversationRootMessageId)?.conversationRootMessageId ??
+    message.threadRootMessageId ??
+    undefined;
   return {
+    messageId: message.id,
+    ...(rootMessageId ? { rootMessageId } : {}),
     taskId: first.taskId,
     runId: first.id,
     seq: message.seq,
@@ -310,7 +322,9 @@ export async function threadHead(prisma: PrismaClient, target: ThreadTarget) {
 export async function threadSnapshot(
   deps: { prisma: PrismaClient },
   target: ThreadTarget,
+  options: { includeRoots?: boolean } = {},
 ): Promise<ThreadSnapshot> {
+  const includeRoots = options.includeRoots === true;
   // Lock the thread row so messages, the event cursor, active runs, and live
   // progress are read from one consistent commit. A torn Promise.all can
   // otherwise advance the client cursor past thread.message.created while the
@@ -324,8 +338,20 @@ export async function threadSnapshot(
       }),
       deps.prisma.$transaction(async (tx) => {
         await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR SHARE`;
-        const [messagePage, last, waitingRun, busyOrFailed] = await Promise.all([
+        const [messagePage, rootPage, last, waitingRun, busyOrFailed] = await Promise.all([
           loadMessagePage(tx, target.threadId, undefined, THREAD_MESSAGE_PAGE_SIZE),
+          includeRoots
+            ? loadMessagePage(
+                tx,
+                target.threadId,
+                undefined,
+                THREAD_MESSAGE_PAGE_SIZE,
+                undefined,
+                false,
+                false,
+                true,
+              )
+            : Promise.resolve(null),
           tx.event.findFirst({
             where: { threadId: target.threadId },
             orderBy: { seq: "desc" },
@@ -393,7 +419,10 @@ export async function threadSnapshot(
                 orderBy: { seq: "asc" },
               })
             : [];
-        return { messagePage, last, run: currentRun, liveEvents };
+        const rootSummaries = includeRoots
+          ? await summarizeThreadRoots(tx, target.threadId, rootPage?.messages ?? [])
+          : [];
+        return { messagePage, rootPage, rootSummaries, last, run: currentRun, liveEvents };
       }),
     ]);
     return {
@@ -402,6 +431,13 @@ export async function threadSnapshot(
       cursor: core.last?.seq ?? -1,
       messages: messagesWithLiveEvents(core.messagePage.messages, core.liveEvents),
       olderCursor: core.messagePage.olderCursor,
+      ...(includeRoots
+        ? {
+            rootMessages: core.rootPage?.messages ?? [],
+            rootOlderCursor: core.rootPage?.olderCursor ?? null,
+            rootSummaries: core.rootSummaries,
+          }
+        : {}),
       run: core.run ? mapRun(core.run) : null,
       computer: toComputerStatus(target.botId, target.bot.computer, busyBotName),
     };
@@ -409,8 +445,20 @@ export async function threadSnapshot(
 
   const core = await deps.prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR SHARE`;
-    const [messagePage, last, activeRuns, recentTerminals] = await Promise.all([
+    const [messagePage, rootPage, last, activeRuns, recentTerminals] = await Promise.all([
       loadMessagePage(tx, target.threadId, undefined, THREAD_MESSAGE_PAGE_SIZE),
+      includeRoots
+        ? loadMessagePage(
+            tx,
+            target.threadId,
+            undefined,
+            THREAD_MESSAGE_PAGE_SIZE,
+            undefined,
+            false,
+            false,
+            true,
+          )
+        : Promise.resolve(null),
       tx.event.findFirst({
         where: { threadId: target.threadId },
         orderBy: { seq: "desc" },
@@ -458,8 +506,13 @@ export async function threadSnapshot(
             orderBy: { seq: "asc" },
           })
         : [];
+    const rootSummaries = includeRoots
+      ? await summarizeThreadRoots(tx, target.threadId, rootPage?.messages ?? [])
+      : [];
     return {
       messagePage,
+      rootPage,
+      rootSummaries,
       last,
       activeRuns,
       terminalRun: pickLatestTerminalRun(recentTerminals),
@@ -475,6 +528,13 @@ export async function threadSnapshot(
     cursor: core.last?.seq ?? -1,
     messages: messagesWithLiveEvents(core.messagePage.messages, core.liveEvents),
     olderCursor: core.messagePage.olderCursor,
+    ...(includeRoots
+      ? {
+          rootMessages: core.rootPage?.messages ?? [],
+          rootOlderCursor: core.rootPage?.olderCursor ?? null,
+          rootSummaries: core.rootSummaries,
+        }
+      : {}),
     // Match the live reducer: a failed latest terminal stays in run even while siblings are
     // still active or start late. A newer completed/cancelled terminal clears it.
     run:
@@ -586,6 +646,8 @@ export async function sendThreadMessage(
     mentions?: MentionTargetInput[];
     replyToMessageId?: string;
     replyInThread?: boolean;
+    conversationMode?: "thread";
+    retryRunId?: string;
     clientNonce?: string;
   },
 ) {
@@ -604,8 +666,46 @@ export async function sendThreadMessage(
         if (!reply) throw new ORPCError("NOT_FOUND");
         if (input.replyInThread) threadRootMessageId = reply.threadRootMessageId ?? reply.id;
       }
+      let retryRun: {
+        id: string;
+        threadId: string;
+        botId: string;
+        status: string;
+        sourceMessageId: string | null;
+        conversationRootMessageId: string | null;
+      } | null = null;
+      if (input.retryRunId) {
+        retryRun = await tx.run.findFirst({
+          where: { id: input.retryRunId, threadId: target.threadId },
+          select: {
+            id: true,
+            threadId: true,
+            botId: true,
+            status: true,
+            sourceMessageId: true,
+            conversationRootMessageId: true,
+          },
+        });
+        if (!retryRun || !RETRYABLE_RUN_STATUSES.has(retryRun.status)) {
+          throw new ORPCError("CONFLICT", {
+            message: "This run is no longer retryable.",
+          });
+        }
+        if (!threadRootMessageId) {
+          throw new ORPCError("CONFLICT", {
+            message: "Retry must stay in its original thread.",
+          });
+        }
+        const retryRootMessageId = await resolveConversationRootMessageId(tx, retryRun);
+        if (retryRootMessageId !== threadRootMessageId) {
+          throw new ORPCError("CONFLICT", {
+            message: "Retry must stay in its original thread.",
+          });
+        }
+      }
 
       if (target.kind === "bot") {
+        if (retryRun && retryRun.botId !== target.botId) throw new IsolationError();
         const mentionTargets = splitMentionTargets(input.mentions);
         const { blocks: attachmentBlocks, artifacts } = await resolveSendAttachments(
           { prisma: tx },
@@ -627,6 +727,8 @@ export async function sendThreadMessage(
           threadRootMessageId,
           clientNonce: input.clientNonce,
         });
+        const requestedRootMessageId =
+          input.conversationMode === "thread" ? message.id : (threadRootMessageId ?? null);
         const activeRuns = await tx.run.findMany({
           where: {
             threadId: target.threadId,
@@ -637,15 +739,21 @@ export async function sendThreadMessage(
             id: true,
             taskId: true,
             status: true,
+            sourceMessageId: true,
+            conversationRootMessageId: true,
             sourceMessage: { select: { threadRootMessageId: true } },
           },
         });
-        if (
-          activeRuns.some(
-            (run) =>
-              (run.sourceMessage?.threadRootMessageId ?? null) !== (threadRootMessageId ?? null),
-          )
-        ) {
+        const activeRoots = await Promise.all(
+          activeRuns.map((run) =>
+            resolveConversationRootMessageId(tx, {
+              threadId: target.threadId,
+              sourceMessageId: run.sourceMessageId,
+              conversationRootMessageId: run.conversationRootMessageId,
+            }),
+          ),
+        );
+        if (activeRoots.some((root) => root !== requestedRootMessageId)) {
           throw new ORPCError("CONFLICT", {
             message: "Wait for the bot to finish its current thread.",
           });
@@ -702,6 +810,8 @@ export async function sendThreadMessage(
             trigger: "user",
             clientNonce: sendRunClientNonce(input.clientNonce, message.id),
             sourceMessageId: message.id,
+            conversationRootMessageId:
+              threadRootMessageId ?? (input.conversationMode === "thread" ? message.id : undefined),
           },
         });
         await tx.message.update({ where: { id: message.id }, data: { runId: run.id } });
@@ -730,11 +840,14 @@ export async function sendThreadMessage(
       const members = await lockAndLoadGroupMembers(tx, actor, target);
       const memberBotIds = members.map((member) => member.botId);
       const mentionTargets = splitMentionTargets(input.mentions);
-      const targetBotIds = resolveGroupTargetBotIds({
-        text: input.text ?? "",
-        members: members.map((member) => ({ id: member.botId, name: member.name })),
-        explicitMentions: mentionTargets.botMentionIds,
-      });
+      if (retryRun && !memberBotIds.includes(retryRun.botId)) throw new IsolationError();
+      const targetBotIds = retryRun
+        ? [retryRun.botId]
+        : resolveGroupTargetBotIds({
+            text: input.text ?? "",
+            members: members.map((member) => ({ id: member.botId, name: member.name })),
+            explicitMentions: mentionTargets.botMentionIds,
+          });
       const { blocks: attachmentBlocks, artifacts } = await resolveGroupSendAttachments(
         { prisma: tx },
         actor,
@@ -756,6 +869,8 @@ export async function sendThreadMessage(
         threadRootMessageId,
         clientNonce: input.clientNonce,
       });
+      const requestedRootMessageId =
+        input.conversationMode === "thread" ? message.id : (threadRootMessageId ?? null);
       const activeRuns = await tx.run.findMany({
         where: {
           threadId: target.threadId,
@@ -767,15 +882,21 @@ export async function sendThreadMessage(
           taskId: true,
           botId: true,
           status: true,
+          sourceMessageId: true,
+          conversationRootMessageId: true,
           sourceMessage: { select: { threadRootMessageId: true } },
         },
       });
-      if (
-        activeRuns.some(
-          (run) =>
-            (run.sourceMessage?.threadRootMessageId ?? null) !== (threadRootMessageId ?? null),
-        )
-      ) {
+      const activeRoots = await Promise.all(
+        activeRuns.map((run) =>
+          resolveConversationRootMessageId(tx, {
+            threadId: target.threadId,
+            sourceMessageId: run.sourceMessageId,
+            conversationRootMessageId: run.conversationRootMessageId,
+          }),
+        ),
+      );
+      if (activeRoots.some((root) => root !== requestedRootMessageId)) {
         throw new ORPCError("CONFLICT", {
           message: "Wait for the bot to finish its current thread.",
         });
@@ -820,6 +941,8 @@ export async function sendThreadMessage(
             trigger: "user",
             clientNonce: sendRunClientNonce(input.clientNonce, message.id, botId),
             sourceMessageId: message.id,
+            conversationRootMessageId:
+              threadRootMessageId ?? (input.conversationMode === "thread" ? message.id : undefined),
           },
         });
         runs.push(run);
@@ -851,6 +974,7 @@ export async function sendThreadMessage(
           blocks,
           runIds: runs.map((run) => run.id),
           replyToMessageId: input.replyToMessageId,
+          retryRunId: input.retryRunId,
         },
       });
       return { message, runs, eventSeq: event.seq };
@@ -942,24 +1066,66 @@ export async function stopThreadRuns(
   },
   actor: Actor,
   target: ThreadTarget,
+  rootMessageId?: string,
 ) {
   const { runIds, computers, leases } = await deps.prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR UPDATE`;
-    const cancelled = await tx.run.updateManyAndReturn({
-      where: {
-        threadId: target.threadId,
-        status: { in: [...ACTIVE_RUN_STATUSES] },
-      },
-      data: { status: "cancelled", completedAt: new Date() },
-      select: { id: true },
-    });
+    const selectedRoot = rootMessageId
+      ? await tx.message.findFirst({
+          where: { id: rootMessageId, threadId: target.threadId },
+          select: { id: true, threadRootMessageId: true },
+        })
+      : null;
+    if (rootMessageId && !selectedRoot) throw new IsolationError();
+    const canonicalRootId = selectedRoot?.threadRootMessageId ?? selectedRoot?.id;
+    const activeWhere = {
+      threadId: target.threadId,
+      status: { in: [...ACTIVE_RUN_STATUSES] },
+    };
+    const scopedRuns = rootMessageId
+      ? await tx.run.findMany({
+          where: activeWhere,
+          select: {
+            id: true,
+            threadId: true,
+            sourceMessageId: true,
+            conversationRootMessageId: true,
+          },
+        })
+      : [];
+    const scopedRunIds = rootMessageId
+      ? (
+          await Promise.all(
+            scopedRuns.map(async (run) => ({
+              id: run.id,
+              rootId: await resolveConversationRootMessageId(tx, run),
+            })),
+          )
+        )
+          .filter((run) => run.rootId === canonicalRootId)
+          .map((run) => run.id)
+      : undefined;
+    const cancelled =
+      scopedRunIds && scopedRunIds.length === 0
+        ? []
+        : await tx.run.updateManyAndReturn({
+            where: {
+              ...activeWhere,
+              ...(scopedRunIds ? { id: { in: scopedRunIds } } : {}),
+            },
+            data: { status: "cancelled", completedAt: new Date() },
+            select: { id: true },
+          });
     const ids = cancelled.map((run) => run.id);
-    await tx.steeringMessage.deleteMany({
-      where: {
-        botId: { in: target.kind === "bot" ? [target.botId] : target.memberBotIds },
-        message: { threadId: target.threadId },
-      },
-    });
+    if (!rootMessageId || ids.length > 0) {
+      await tx.steeringMessage.deleteMany({
+        where: {
+          botId: { in: target.kind === "bot" ? [target.botId] : target.memberBotIds },
+          message: { threadId: target.threadId },
+          ...(rootMessageId ? { runId: { in: ids } } : {}),
+        },
+      });
+    }
     // Snapshot teardown coordinates before commit. Once cancellation becomes
     // visible, a worker can release its lease / execution columns immediately; a
     // later lookup would then miss the sandbox work this request must stop.

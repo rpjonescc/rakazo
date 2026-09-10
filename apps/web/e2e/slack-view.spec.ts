@@ -1,5 +1,12 @@
 import { expect, test } from "@playwright/test";
-import { activeBotId, completeOnboarding, createNamedBot, rpc, signup } from "./helpers";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  createNamedBot,
+  rpc,
+  signup,
+} from "./helpers";
 
 type ThreadSnapshot = {
   threadId: string;
@@ -11,7 +18,9 @@ type ThreadSnapshot = {
   }>;
 };
 
-test("optional Slack workspace preserves navigation, threads, and themes", async ({ page }) => {
+test("optional Slack workspace preserves navigation, threads, and themes", async ({
+  page,
+}, testInfo) => {
   const stamp = Date.now();
   await signup(page, `slack-view-${stamp}@rakazo.test`, "password12", "Slack View");
   await completeOnboarding(page);
@@ -42,6 +51,7 @@ test("optional Slack workspace preserves navigation, threads, and themes", async
     await composer.evaluate((element) => element.getBoundingClientRect().height),
   ).toBeGreaterThan(110);
   expect(await composer.evaluate((element) => getComputedStyle(element).borderRadius)).toBe("9px");
+  await captureScreenshot(page, testInfo, "slack-light-desktop");
 
   await page.goto(`/app/${firstBotId}`);
   const sent = await rpc<{ runId: string }>(page, "threads/send", {
@@ -95,7 +105,7 @@ test("optional Slack workspace preserves navigation, threads, and themes", async
   await expect(thread.locator("textarea")).toHaveAttribute("placeholder", "Reply in thread");
   await expect(thread.getByTestId("reply-parent-preview")).toHaveCount(0);
   await expect(thread.locator(`[data-message-id="${root!.id}"]`)).toHaveCount(1);
-  await expect(thread.getByRole("button", { name: "Back to original message" })).toBeVisible();
+  await expect(thread.getByRole("button", { name: "Back to direct message" })).toBeVisible();
   await thread.getByRole("button", { name: "Load earlier messages" }).click();
   await thread.getByRole("button", { name: "Load earlier messages" }).click();
   await expect(thread).toContainText("Slack thread reply");
@@ -123,6 +133,7 @@ test("optional Slack workspace preserves navigation, threads, and themes", async
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expect(page.getByTestId("slack-workspace")).toBeVisible();
   await expect(page.getByTestId("slack-channel-list")).toContainText("Planning");
+  await captureScreenshot(page, testInfo, "slack-dark-desktop");
   await page.getByTestId("slack-view-toggle").click();
   await expect(page.getByTestId("transcript")).toBeVisible();
   await page.reload();

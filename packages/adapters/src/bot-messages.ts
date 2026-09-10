@@ -12,7 +12,9 @@ import {
 import {
   appendEventInTransaction,
   createThreadMessageInTransaction,
+  type Prisma,
   type PrismaClient,
+  resolveConversationRootMessageId,
   withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -42,7 +44,15 @@ export async function loadBotMessageContext(
   if (!sourceMessageId) return undefined;
   const source = await prisma.message.findUnique({
     where: { id: sourceMessageId },
-    select: { blocks: true, replyTo: { select: { blocks: true } } },
+    select: {
+      id: true,
+      threadId: true,
+      runId: true,
+      role: true,
+      botId: true,
+      blocks: true,
+      replyTo: { select: { blocks: true } },
+    },
   });
   const context = botMessageContext(
     Array.isArray(source?.blocks) ? (source.blocks as MessageBlock[]) : [],
@@ -56,7 +66,14 @@ export async function loadBotMessageContext(
       block.kind === "bot_message_sent" &&
       (block.intent === undefined || block.intent === "request" || block.intent === "question"),
   );
-  return { ...context, repliesToRequest };
+  return {
+    ...context,
+    repliesToRequest,
+    messageThreadId: source!.threadId,
+    messageRunId: source!.runId,
+    messageRole: source!.role,
+    messageBotId: source!.botId,
+  };
 }
 
 export async function messageBot(
@@ -110,7 +127,9 @@ export async function messageBot(
     (sourceContext?.intent === undefined ||
       sourceContext.intent === "request" ||
       sourceContext.intent === "question") &&
-    sourceContext?.fromBotId === target.id;
+    sourceContext?.fromBotId === target.id &&
+    sourceContext.messageThreadId === run.threadId &&
+    sourceContext.messageRunId === run.id;
   if (botMessageHopExhausted(hop) && !returnsToSender) {
     return {
       ok: false as const,
@@ -202,6 +221,21 @@ export async function messageBot(
         if (!stillAddressable)
           return { ok: false as const, error: `${target.name} is no longer available` };
 
+        const returnAddress = returnsToSender
+          ? await resolveReturnAddress(tx, targetThreadId, sourceContext?.returnToMessageId, {
+              spaceId: run.spaceId,
+              userId: run.userId,
+              senderBotId: target.id,
+              recipientBotId: run.botId,
+            })
+          : null;
+        if (returnsToSender && !returnAddress) {
+          return {
+            ok: false as const,
+            error: "cannot verify the delegated conversation return address",
+          };
+        }
+
         // Echo into the sender's chat in the same transaction so a failed notify
         // cannot leave one side delivered and the other blank.
         const outbound = await createThreadMessageInTransaction(tx, {
@@ -225,10 +259,8 @@ export async function messageBot(
           threadId: targetThreadId,
           role: "user",
           blocks: [inboundBlock],
-          replyToMessageId:
-            sourceContext?.fromBotId === target.id && intent !== "fyi"
-              ? sourceContext.returnToMessageId
-              : undefined,
+          replyToMessageId: returnAddress?.messageId,
+          threadRootMessageId: returnAddress?.rootMessageId ?? undefined,
           clientNonce: deliveryKey,
           markUnread: true,
         });
@@ -252,6 +284,7 @@ export async function messageBot(
             status: "queued",
             trigger: "bot_message",
             sourceMessageId: inbound.id,
+            conversationRootMessageId: returnAddress?.rootMessageId ?? undefined,
           },
           select: { id: true },
         });
@@ -311,6 +344,84 @@ export async function messageBot(
     name: target.name,
     delivered: message,
     note: `Sent to ${target.name}. Delivery is async; a reply wakes you later as a new message. Continue independent work; send another update later only if it adds something new.`,
+  };
+}
+
+async function resolveReturnAddress(
+  tx: Prisma.TransactionClient,
+  threadId: string,
+  messageId: string | undefined,
+  expected: {
+    spaceId: string;
+    userId: string;
+    senderBotId: string;
+    recipientBotId: string;
+  },
+) {
+  if (!messageId) return null;
+  const message = await tx.message.findFirst({
+    where: { id: messageId, threadId },
+    select: {
+      id: true,
+      threadRootMessageId: true,
+      runId: true,
+      role: true,
+      botId: true,
+      blocks: true,
+    },
+  });
+  if (message?.role !== "bot" || message.botId !== expected.senderBotId) return null;
+  const sentBlock = (Array.isArray(message.blocks) ? (message.blocks as MessageBlock[]) : []).find(
+    (block) =>
+      block.kind === "bot_message_sent" &&
+      block.toBotId === expected.recipientBotId &&
+      (block.intent === undefined || block.intent === "request" || block.intent === "question"),
+  );
+  if (!sentBlock || !message.runId) return null;
+  const sourceRun = await tx.run.findUnique({
+    where: { id: message.runId },
+    select: {
+      id: true,
+      threadId: true,
+      spaceId: true,
+      userId: true,
+      botId: true,
+      sourceMessageId: true,
+      conversationRootMessageId: true,
+    },
+  });
+  if (
+    !sourceRun ||
+    sourceRun.threadId !== threadId ||
+    sourceRun.spaceId !== expected.spaceId ||
+    sourceRun.userId !== expected.userId ||
+    sourceRun.botId !== expected.senderBotId
+  ) {
+    return null;
+  }
+  const durableRootMessageId = await resolveConversationRootMessageId(tx, sourceRun);
+  if (
+    message.threadRootMessageId &&
+    durableRootMessageId &&
+    message.threadRootMessageId !== durableRootMessageId
+  ) {
+    return null;
+  }
+  if (!message.threadRootMessageId && !durableRootMessageId) {
+    return { messageId: message.id, rootMessageId: null };
+  }
+  const rootMessageId = message.threadRootMessageId ?? durableRootMessageId;
+  if (!rootMessageId) return null;
+  if (!message.threadRootMessageId) {
+    const root = await tx.message.findFirst({
+      where: { id: rootMessageId, threadId },
+      select: { id: true, threadRootMessageId: true },
+    });
+    if (!root || root.threadRootMessageId) return null;
+  }
+  return {
+    messageId: message.id,
+    rootMessageId,
   };
 }
 

@@ -840,10 +840,41 @@ export const RunSchema = z.object({
 });
 export type Run = z.infer<typeof RunSchema>;
 
+export const ThreadRootStateSchema = z.enum([
+  "queued",
+  "running",
+  "waiting_input",
+  "waiting_takeover",
+  "completed",
+  "failed",
+  "cancelled",
+  "mixed",
+  "silent",
+]);
+export type ThreadRootState = z.infer<typeof ThreadRootStateSchema>;
+
+export const ThreadRootSummarySchema = z.object({
+  rootMessageId: Id,
+  participantBotIds: z.array(Id),
+  replyCount: z.number().int().nonnegative(),
+  state: ThreadRootStateSchema,
+  runs: z.array(
+    z.object({
+      id: Id,
+      botId: Id,
+      taskId: Id,
+      status: RunStatus,
+      error: z.string().nullable(),
+    }),
+  ),
+});
+export type ThreadRootSummary = z.infer<typeof ThreadRootSummarySchema>;
+
 export const ThreadMessagePageSchema = z.object({
   threadId: Id,
   messages: z.array(ThreadMessageSchema),
   olderCursor: z.number().int().nonnegative().nullable(),
+  rootSummaries: z.array(ThreadRootSummarySchema).optional(),
 });
 export type ThreadMessagePage = z.infer<typeof ThreadMessagePageSchema>;
 
@@ -853,6 +884,7 @@ export const ThreadReplyPageSchema = z.object({
   messages: z.array(ThreadMessageSchema),
   olderCursor: z.number().int().nonnegative().nullable(),
   replyCount: z.number().int().nonnegative(),
+  rootSummary: ThreadRootSummarySchema.optional(),
 });
 export type ThreadReplyPage = z.infer<typeof ThreadReplyPageSchema>;
 
@@ -861,6 +893,9 @@ export const ThreadSnapshotSchema = z.object({
   cursor: z.number().int().min(-1),
   messages: z.array(ThreadMessageSchema),
   olderCursor: z.number().int().nonnegative().nullable(),
+  rootMessages: z.array(ThreadMessageSchema).optional(),
+  rootOlderCursor: z.number().int().nonnegative().nullable().optional(),
+  rootSummaries: z.array(ThreadRootSummarySchema).optional(),
   botId: Id.optional(),
   groupId: Id.optional(),
   groupName: z.string().optional(),

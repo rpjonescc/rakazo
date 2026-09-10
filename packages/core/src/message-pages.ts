@@ -3,10 +3,17 @@ interface MessageIdentity {
   seq?: number;
 }
 
+interface RootSummaryIdentity {
+  rootMessageId: string;
+}
+
 export interface ThreadHistory<TMessage extends MessageIdentity> {
   threadId: string;
   messages: readonly TMessage[];
   olderCursor: number | null;
+  rootMessages?: readonly TMessage[];
+  rootOlderCursor?: number | null;
+  rootSummaries?: readonly RootSummaryIdentity[];
 }
 
 export function mergeThreadHistory<
@@ -18,7 +25,88 @@ export function mergeThreadHistory<
     ...recent,
     messages: mergeMessagePages(previous.messages, recent.messages),
     olderCursor: previous.olderCursor,
+    ...(previous.rootMessages !== undefined || recent.rootMessages !== undefined
+      ? {
+          rootMessages: mergeThreadRootMessages(
+            previous.rootMessages ?? [],
+            recent.rootMessages ?? [],
+          ),
+          rootOlderCursor:
+            previous.rootMessages?.length === 0 || recent.rootMessages?.length === 0
+              ? previous.rootOlderCursor
+              : hasMessageIdOverlap(previous.rootMessages ?? [], recent.rootMessages ?? [])
+                ? previous.rootOlderCursor
+                : (recent.rootOlderCursor ??
+                  firstMessageSeq(recent.rootMessages ?? []) ??
+                  previous.rootOlderCursor),
+          rootSummaries:
+            previous.rootSummaries !== undefined || recent.rootSummaries !== undefined
+              ? mergeThreadRootSummaries(previous.rootSummaries ?? [], recent.rootSummaries ?? [])
+              : undefined,
+        }
+      : {}),
   };
+}
+
+export function prependThreadRootHistoryPage<
+  TMessage extends MessageIdentity,
+  TSnapshot extends ThreadHistory<TMessage>,
+>(previous: TSnapshot | null, page: ThreadHistory<TMessage>): TSnapshot | null {
+  if (!previous || previous.threadId !== page.threadId || previous.rootOlderCursor == null) {
+    return previous;
+  }
+  return {
+    ...previous,
+    rootMessages: mergeThreadRootMessages(
+      page.rootMessages ?? page.messages,
+      previous.rootMessages ?? [],
+    ),
+    rootOlderCursor: page.rootOlderCursor ?? page.olderCursor,
+    ...(previous.rootSummaries !== undefined || page.rootSummaries !== undefined
+      ? {
+          rootSummaries: mergeThreadRootSummaries(
+            page.rootSummaries ?? [],
+            previous.rootSummaries ?? [],
+          ),
+        }
+      : {}),
+  };
+}
+
+export function mergeThreadRootMessages<T extends MessageIdentity>(
+  previous: readonly T[],
+  recent: readonly T[],
+): T[] {
+  const byId = new Map(previous.map((message) => [message.id, message]));
+  for (const message of recent) byId.set(message.id, message);
+  return [...byId.values()].sort((a, b) => {
+    if (typeof a.seq !== "number" || typeof b.seq !== "number") return 0;
+    return a.seq - b.seq;
+  });
+}
+
+export function mergeThreadRootSummaries<T extends RootSummaryIdentity>(
+  previous: readonly T[],
+  recent: readonly T[],
+): T[] {
+  const byId = new Map(previous.map((summary) => [summary.rootMessageId, summary]));
+  for (const summary of recent) byId.set(summary.rootMessageId, summary);
+  return [...byId.values()];
+}
+
+function hasMessageIdOverlap<T extends MessageIdentity>(
+  first: readonly T[],
+  second: readonly T[],
+): boolean {
+  const ids = new Set(first.map((message) => message.id));
+  return second.some((message) => ids.has(message.id));
+}
+
+function firstMessageSeq<T extends MessageIdentity>(messages: readonly T[]): number | null {
+  return messages.reduce<number | null>((first, message) => {
+    if (typeof message.seq !== "number") return first;
+    return Math.min(first ?? message.seq, message.seq);
+  }, null);
 }
 
 export function prependThreadHistoryPage<

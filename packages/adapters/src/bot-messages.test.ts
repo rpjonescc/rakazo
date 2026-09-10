@@ -28,8 +28,15 @@ function deps(
     /** Simulate a unique (threadId, clientNonce) race after both retries miss. */
     uniqueConflictOnCommit?: boolean;
     transactionConflictOnce?: boolean;
+    returnAddress?: unknown;
+    returnAddressRun?: unknown;
   } = {},
 ) {
+  const alternateTargetThreadId = options.bots?.some(
+    (bot) => (bot as { id?: string }).id === "bot-other",
+  )
+    ? "thread-other"
+    : "thread-target";
   const enqueue = vi.fn().mockResolvedValue(undefined);
   const notify = vi.fn().mockResolvedValue(undefined);
   const messageFindUnique = vi
@@ -37,7 +44,14 @@ function deps(
     .mockImplementation(async (args: { where?: { threadId_clientNonce?: unknown } }) =>
       args?.where?.threadId_clientNonce
         ? (options.alreadyDelivered ?? null)
-        : { blocks: options.hopBlocks ?? [] },
+        : {
+            id: "message-source",
+            threadId: "thread-sender",
+            runId: "run-1",
+            role: "user",
+            botId: "bot-sender",
+            blocks: options.hopBlocks ?? [],
+          },
     );
   const tx = {
     $queryRaw: vi.fn().mockResolvedValue([{ id: "thread" }]),
@@ -45,7 +59,37 @@ function deps(
       findFirst: vi
         .fn()
         .mockResolvedValue(options.senderRunning === false ? null : { id: "run-1" }),
-      findUnique: vi.fn().mockResolvedValue({ status: "running" }),
+      findUnique: vi
+        .fn()
+        .mockImplementation(
+          async (args: { where?: { id?: string }; select?: Record<string, unknown> }) => {
+            if (args.where?.id === "run-1" && args.select && "threadId" in args.select) {
+              return {
+                id: "run-1",
+                threadId: "thread-sender",
+                spaceId: "workspace-1",
+                userId: "user-1",
+                botId: "bot-sender",
+                sourceMessageId: null,
+                conversationRootMessageId: null,
+              };
+            }
+            if (args.select && "threadId" in args.select) {
+              return (
+                options.returnAddressRun ?? {
+                  id: "run-parent",
+                  threadId: alternateTargetThreadId,
+                  spaceId: "workspace-1",
+                  userId: "user-1",
+                  botId: "bot-target",
+                  sourceMessageId: null,
+                  conversationRootMessageId: "root-origin",
+                }
+              );
+            }
+            return { status: "running" };
+          },
+        ),
       create: vi.fn().mockResolvedValue({ id: "run-2" }),
     },
     bot: {
@@ -54,6 +98,26 @@ function deps(
     task: { create: vi.fn().mockResolvedValue({ id: "task-1" }) },
     message: {
       findUnique: messageFindUnique,
+      findFirst: vi.fn().mockImplementation(async (args: { where?: { id?: string } }) =>
+        args.where?.id === "root-origin"
+          ? { id: "root-origin", threadRootMessageId: null }
+          : (options.returnAddress ?? {
+              id: "message-request",
+              threadRootMessageId: "root-origin",
+              runId: "run-parent",
+              role: "bot",
+              botId: "bot-target",
+              blocks: [
+                {
+                  kind: "bot_message_sent",
+                  toBotId: "bot-sender",
+                  toBotName: "Researcher",
+                  text: "research this",
+                  intent: "request",
+                },
+              ],
+            }),
+      ),
       create: vi.fn().mockResolvedValue({ id: "message-1", seq: 1 }),
       update: vi.fn().mockResolvedValue({}),
     },
@@ -238,6 +302,7 @@ describe("messaging another bot", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           replyToMessageId: "message-request",
+          threadRootMessageId: "root-origin",
           blocks: expect.arrayContaining([expect.objectContaining({ intent: "result" })]),
         }),
       }),
@@ -531,6 +596,48 @@ describe("hardening", () => {
 });
 
 describe("automatic outcome return", () => {
+  it("does not follow a same-thread message that is not the delegated request", async () => {
+    const harness = deps({
+      hopBlocks: [
+        {
+          kind: "bot_message_received",
+          fromBotId: "bot-target",
+          fromBotName: "Coordinator",
+          text: "research this",
+          hop: 1,
+          intent: "request",
+          returnToMessageId: "message-request",
+        },
+      ],
+      returnAddress: {
+        id: "message-request",
+        threadRootMessageId: "root-origin",
+        runId: "run-parent",
+        role: "bot",
+        botId: "bot-other",
+        blocks: [
+          {
+            kind: "bot_message_sent",
+            toBotId: "bot-sender",
+            toBotName: "Researcher",
+            text: "not the delegated request",
+            intent: "request",
+          },
+        ],
+      },
+    });
+    const returned = await returnBotMessageOutcome(
+      harness.deps,
+      { ...run, sourceMessageId: "message-source" },
+      sender,
+      "The answer is 42.",
+    );
+
+    expect(returned).toBe(false);
+    expect(harness.tx.message.create).not.toHaveBeenCalled();
+    expect(harness.enqueue).not.toHaveBeenCalled();
+  });
+
   it("routes a delegated run's final text back to its coordinator", async () => {
     const harness = deps({
       hopBlocks: [
