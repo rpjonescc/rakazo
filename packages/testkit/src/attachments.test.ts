@@ -70,7 +70,7 @@ describeAttachments("chat attachments", () => {
     );
     expect(imageMessage?.blocks).toEqual(
       expect.arrayContaining([
-        { kind: "text", text: "see this" },
+        { kind: "text", text: "see this", mentions: [] },
         expect.objectContaining({ kind: "image", artifactId: image.id, name: "pixel.png" }),
       ]),
     );

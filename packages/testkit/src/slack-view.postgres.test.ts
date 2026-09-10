@@ -82,6 +82,25 @@ describeWithDatabase("optional Slack view thread persistence", () => {
       mentions: [sage.id],
       conversationMode: "thread",
     });
+    const persistedRoot = await prisma.message.findUniqueOrThrow({ where: { id: root.messageId } });
+    expect(persistedRoot.blocks).toMatchObject([
+      { mentions: [{ id: sage.id, name: "Sage", start: 0, end: 5 }] },
+    ]);
+    // Legacy read-only recovery is anchored to this message's direct user run, not current audience.
+    await prisma.message.update({
+      where: { id: root.messageId },
+      data: { blocks: [{ kind: "text", text: "@Sage How is it going?" }] },
+    });
+    const legacyPage = await rpc<ReplyPage>(app, cookie, "threads/replies", {
+      groupId: group.id,
+      rootMessageId: root.messageId,
+    });
+    expect(legacyPage.rootMessage.blocks).toMatchObject([
+      { mentions: [{ id: sage.id, name: "Sage" }] },
+    ]);
+    expect(
+      (await prisma.message.findUniqueOrThrow({ where: { id: root.messageId } })).blocks,
+    ).toEqual([{ kind: "text", text: "@Sage How is it going?" }]);
     const followup = await send({
       text: "Not too bad actually!",
       replyToMessageId: root.messageId,

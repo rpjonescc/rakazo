@@ -979,7 +979,7 @@ describe("sendThreadMessage", () => {
       kind: "bot",
       botId: "bot-1",
       threadId: "thread-1",
-      bot: { computer: null },
+      bot: { id: "bot-1", name: "Fixture bot", color: "#123456", computer: null },
     } as ThreadTarget;
 
     await expect(

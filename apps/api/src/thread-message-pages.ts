@@ -7,6 +7,7 @@ import type {
 import { isPeerReceiptBlocks } from "@rakazo/core";
 import { IsolationError, type Prisma, type PrismaClient, summarizeThreadRoots } from "@rakazo/db";
 
+import { withMessageMentions } from "./message-mentions.js";
 import { loadThreadRecipientBotIds } from "./thread-recipients.js";
 
 export const THREAD_REPLY_PAGE_SIZE = 50;
@@ -93,9 +94,49 @@ export async function loadMessagePage(
 }
 
 async function attachReplyCounts<
-  T extends { id: string; threadId: string; threadRootMessageId: string | null },
+  T extends {
+    id: string;
+    threadId: string;
+    threadRootMessageId: string | null;
+    role: string;
+    blocks: Prisma.JsonValue;
+  },
 >(prisma: MessageDb, rows: T[]): Promise<Array<T & { replyCount: number }>> {
   if (rows.length === 0) return [];
+  // Old messages have no identity snapshots. Recover only from their own direct user
+  // run (not a helper, current audience, name catalogue, or most recent reply). No writes.
+  const legacy = rows.filter(
+    (row) =>
+      row.role === "user" &&
+      (row.blocks as MessageBlock[]).some(
+        (block) => block.kind === "text" && block.mentions === undefined,
+      ),
+  );
+  const runs = legacy.length
+    ? await prisma.run.findMany({
+        where: {
+          threadId: rows[0]!.threadId,
+          trigger: "user",
+          sourceMessageId: { in: legacy.map((row) => row.id) },
+        },
+        select: { sourceMessageId: true, bot: { select: { id: true, name: true, color: true } } },
+      })
+    : [];
+  rows = rows.map((row) => {
+    if (row.role !== "user") return row;
+    const bots = [
+      ...new Map(
+        runs.filter((run) => run.sourceMessageId === row.id).map((run) => [run.bot.id, run.bot]),
+      ).values(),
+    ];
+    if (!bots.length) return row;
+    const blocks = (row.blocks as MessageBlock[]).flatMap((block) =>
+      block.kind === "text" && block.mentions === undefined
+        ? withMessageMentions([block], bots)
+        : [block],
+    );
+    return { ...row, blocks: blocks as Prisma.JsonValue };
+  });
   const counts = await prisma.message.groupBy({
     by: ["threadRootMessageId"],
     where: {

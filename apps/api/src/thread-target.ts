@@ -38,6 +38,7 @@ import {
   resolveSendAttachments,
 } from "./artifacts.js";
 import { resolveBusyBotName, toComputerStatus } from "./computer-status.js";
+import { withMessageMentions } from "./message-mentions.js";
 import { withSerializableRetry } from "./serializable-retry.js";
 import { loadMessagePage } from "./thread-message-pages.js";
 
@@ -720,7 +721,9 @@ export async function sendThreadMessage(
           actor,
           mentionTargets.connectorMentionIds,
         );
-        const blocks = buildUserMessageBlocks(input.text, attachmentBlocks);
+        const blocks = withMessageMentions(buildUserMessageBlocks(input.text, attachmentBlocks), [
+          target.bot,
+        ]);
         const message = await createThreadMessageInTransaction(tx, {
           threadId: target.threadId,
           role: "user",
@@ -875,7 +878,13 @@ export async function sendThreadMessage(
         actor,
         mentionTargets.connectorMentionIds,
       );
-      const blocks = buildUserMessageBlocks(input.text, attachmentBlocks);
+      const blocks = withMessageMentions(
+        buildUserMessageBlocks(input.text, attachmentBlocks),
+        members
+          .filter((member) => targetBotIds.includes(member.botId))
+          .map((member) => ({ id: member.botId, name: member.name, color: member.color })),
+        !retryRun && targetBotIds.length === memberBotIds.length,
+      );
       const message = await createThreadMessageInTransaction(tx, {
         threadId: target.threadId,
         role: "user",

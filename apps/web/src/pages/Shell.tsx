@@ -2893,7 +2893,9 @@ export function ShellPage() {
                   }
                   threadRecipients={slackReplyPage?.recipientBotIds?.flatMap((id) => {
                     const bot = resolveTranscriptBot(id);
-                    return bot ? [{ kind: "bot" as const, id, name: bot.name }] : [];
+                    return bot
+                      ? [{ kind: "bot" as const, id, name: bot.name, color: bot.color }]
+                      : [];
                   })}
                   placeholder={t`Reply in thread`}
                   onSend={sendSlackReply}
@@ -5148,7 +5150,7 @@ const Composer = memo(function Composer({
     recipientInitialized.current = true;
     if (draftRevision.current !== 0) return;
     generatedRecipients.current = threadRecipients;
-    setDraft(threadRecipients.map((recipient) => `@${recipient.name} `).join(""));
+    setSelectedMentions(threadRecipients);
   }, [threadRecipients]);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionHighlightIndex, setMentionHighlightIndex] = useState(0);
@@ -5239,9 +5241,7 @@ const Composer = memo(function Composer({
 
   function updateDraft(value: string) {
     draftRevision.current += 1;
-    generatedRecipients.current = generatedRecipients.current.filter((recipient) =>
-      hasMentionToken(value, recipient.name),
-    );
+
     setDraft(value);
     const mentionMatch = /(?:^|\s)@([\w-]*)$/.exec(value);
     setMentionQuery(mentionMatch ? (mentionMatch[1] ?? "") : null);
@@ -5257,6 +5257,7 @@ const Composer = memo(function Composer({
   }
 
   function insertMention(mention: ComposerMention) {
+    draftRevision.current += 1;
     setDraft((current) => current.replace(/@([\w-]*)$/, ""));
     setMentionQuery(null);
     setMentionHighlightIndex(0);
@@ -5281,6 +5282,7 @@ const Composer = memo(function Composer({
   }
 
   function removeLastChip() {
+    draftRevision.current += 1;
     if (selectedMentions.length > 0) {
       setSelectedMentions((current) => current.slice(0, -1));
       return;
@@ -5338,10 +5340,7 @@ const Composer = memo(function Composer({
   function send() {
     if (!canSend || sending || disabled) return;
     const text = serializeComposerPrompt(draft, selectedSkill, selectedMentions);
-    const mentions = [
-      ...selectedMentions,
-      ...generatedRecipients.current.filter((recipient) => hasMentionToken(draft, recipient.name)),
-    ];
+    const mentions = selectedMentions;
     const revision = draftRevision.current;
     void onSend(text, mentions)
       .then((recipientIds) => {
@@ -5358,12 +5357,12 @@ const Composer = memo(function Composer({
             })
           : [];
         generatedRecipients.current = recipients;
-        setDraft(recipients.map((recipient) => `@${recipient.name} `).join(""));
+        setDraft("");
         setMentionQuery(null);
         setMentionHighlightIndex(0);
         setSlashQuery(null);
         setSelectedSkill(null);
-        setSelectedMentions([]);
+        setSelectedMentions(recipients);
       })
       .catch(() => undefined);
   }
@@ -5664,31 +5663,19 @@ const Composer = memo(function Composer({
             </span>
           ) : null}
           {selectedMentions.map((mention) => (
-            <span
+            <MentionChip
               key={mentionChipKey(mention)}
-              data-testid="mention-chip"
-              data-mention-kind={mention.kind}
-              className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[13px] text-foreground"
-            >
-              <MentionChipIcon mention={mention} />
-              <span dir="auto" className="truncate">
-                {mention.name}
-              </span>
-              <button
-                type="button"
-                aria-label={t`Remove mention ${mention.name}`}
-                onClick={() =>
-                  setSelectedMentions((current) =>
-                    current.filter(
-                      (selected) => mentionChipKey(selected) !== mentionChipKey(mention),
-                    ),
-                  )
-                }
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <X size={12} strokeWidth={2} />
-              </button>
-            </span>
+              mention={mention}
+              onRemove={() => {
+                draftRevision.current += 1;
+                setSelectedMentions((current) =>
+                  current.filter(
+                    (selected) => mentionChipKey(selected) !== mentionChipKey(mention),
+                  ),
+                );
+                focusComposer();
+              }}
+            />
           ))}
           <textarea
             ref={textareaRef}
@@ -5697,6 +5684,8 @@ const Composer = memo(function Composer({
             onPaste={handlePaste}
             onKeyDown={(event) => {
               if (
+                !event.nativeEvent.isComposing &&
+                event.keyCode !== 229 &&
                 event.key === "Backspace" &&
                 draft.length === 0 &&
                 (selectedSkill !== null || selectedMentions.length > 0)
@@ -5844,6 +5833,58 @@ function MentionOptionIcon({ mention }: { mention: ComposerMention }) {
   return <BotAvatar color={mention.color ?? FALLBACK_BOT_COLOR} identity={mention.id} size={16} />;
 }
 
+function MentionChip({ mention, onRemove }: { mention: ComposerMention; onRemove?: () => void }) {
+  const { t } = useLingui();
+  return (
+    <span
+      data-testid={onRemove ? "mention-chip" : "sent-mention-chip"}
+      data-mention-kind={mention.kind}
+      data-mention-id={mention.id}
+      className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[13px] text-foreground align-middle"
+    >
+      <MentionChipIcon mention={mention} />
+      <span dir="auto" className="truncate">
+        {!onRemove ? <span className="sr-only">@</span> : null}
+        {mention.name}
+      </span>
+      {onRemove ? (
+        <button
+          type="button"
+          aria-label={t`Remove mention ${mention.name}`}
+          onClick={onRemove}
+          className="text-muted-foreground hover:text-foreground"
+        >
+          <X size={12} strokeWidth={2} />
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
+function MentionText({
+  block,
+}: {
+  block: Extract<ThreadMessage["blocks"][number], { kind: "text" }>;
+}) {
+  let offset = 0;
+  const parts: import("react").ReactNode[] = [];
+  for (const mention of block.mentions ?? []) {
+    // Fail closed on stale or malformed spans, preserving every original character.
+    if (
+      mention.start < offset ||
+      mention.end > block.text.length ||
+      block.text.slice(mention.start, mention.end).toLowerCase() !==
+        `@${mention.name}`.toLowerCase()
+    )
+      continue;
+    parts.push(block.text.slice(offset, mention.start));
+    parts.push(<MentionChip key={`${mention.start}:${mention.id}`} mention={mention} />);
+    offset = mention.end;
+  }
+  parts.push(block.text.slice(offset));
+  return <>{parts}</>;
+}
+
 function MentionChipIcon({ mention }: { mention: ComposerMention }) {
   if (mention.kind === "routine") {
     return <Clock size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground/70" />;
@@ -5853,7 +5894,10 @@ function MentionChipIcon({ mention }: { mention: ComposerMention }) {
   }
   if (mention.kind === "group" || mention.kind === "everyone") {
     return (
-      <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-accent text-[9px] text-foreground/75">
+      <span
+        aria-hidden="true"
+        className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-accent text-[9px] text-foreground/75"
+      >
         {mention.kind === "group" ? "G" : "@"}
       </span>
     );
@@ -6367,6 +6411,24 @@ const MessageView = memo(function MessageView({
             <div key={i} className="flex w-fit max-w-full justify-end">
               <div
                 data-testid="message-user-bubble"
+                onCopy={(event) => {
+                  const selection = window.getSelection();
+                  if (
+                    !selection?.rangeCount ||
+                    !selection.anchorNode ||
+                    !selection.focusNode ||
+                    !event.currentTarget.contains(selection.anchorNode) ||
+                    !event.currentTarget.contains(selection.focusNode)
+                  )
+                    return;
+                  // Inline-flex chips introduce layout newlines in native selection text.
+                  // Copy only the selected text, not avatars, markup or editor controls.
+                  const fragment = selection.getRangeAt(0).cloneContents();
+                  for (const icon of fragment.querySelectorAll('[aria-hidden="true"]'))
+                    icon.remove();
+                  event.clipboardData.setData("text/plain", fragment.textContent ?? "");
+                  event.preventDefault();
+                }}
                 className={
                   flatMessage
                     ? "max-w-full whitespace-pre-wrap wrap-anywhere text-[15.5px] leading-[1.45] text-foreground/90"
@@ -6374,7 +6436,7 @@ const MessageView = memo(function MessageView({
                 }
                 dir="auto"
               >
-                {block.text}
+                <MentionText block={block} />
               </div>
             </div>
           );

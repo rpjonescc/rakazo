@@ -86,7 +86,13 @@ const rootMessage = {
   seq: 1,
   role: "user",
   botId: null,
-  blocks: [{ kind: "text", text: "Fixture conversation" }],
+  blocks: [
+    {
+      kind: "text",
+      text: "@Fixture agent Fixture conversation",
+      mentions: [{ kind: "bot", id: bot.id, name: bot.name, color: bot.color, start: 0, end: 14 }],
+    },
+  ],
   createdAt: timestamp,
   replyCount: 2,
 };
@@ -218,8 +224,19 @@ try {
         await page.getByTestId(`slack-thread-${rootMessage.id}`).click();
         const panel = page.getByTestId("slack-thread-panel");
         await expect(panel).toBeVisible();
-        await expect(panel.locator("textarea")).toHaveValue("@Fixture agent ");
-        await panel.locator("textarea").fill("");
+        await expect(panel.locator("textarea")).toHaveValue("");
+        await expect(panel.getByTestId("mention-chip")).toHaveText("Fixture agent");
+        await expect(panel.getByTestId("sent-mention-chip")).toHaveText("@Fixture agent");
+        await expect(panel.getByTestId("sent-mention-chip")).toHaveAttribute(
+          "data-mention-id",
+          bot.id,
+        );
+        await expect(panel.getByTestId("sent-mention-chip").getByRole("button")).toHaveCount(0);
+        const removeMention = panel.getByTestId("mention-chip").getByRole("button");
+        await expect(removeMention).toHaveAttribute("aria-label", /Fixture agent/);
+        if (locale === "en")
+          await expect(removeMention).toHaveAttribute("aria-label", "Remove mention Fixture agent");
+        await removeMention.click();
         await expect(panel.locator("textarea")).toHaveAttribute("placeholder", "Reply in thread");
         await expect(panel.getByTestId("thread-recipient-hint")).toHaveText(
           "Continuing with @Fixture agent",

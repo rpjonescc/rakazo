@@ -88,7 +88,23 @@ export const SecretAskPurpose = z.enum(["otp", "password", "api_key"]);
 export type SecretAskPurpose = z.infer<typeof SecretAskPurpose>;
 
 export const MessageBlock = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("text"), text: z.string() }),
+  z.object({
+    kind: z.literal("text"),
+    text: z.string(),
+    // Server-authored display identity snapshots; never used to route a send.
+    mentions: z
+      .array(
+        z.object({
+          kind: z.enum(["bot", "everyone"]),
+          id: z.string(),
+          name: z.string(),
+          color: z.string().optional(),
+          start: z.number().int().nonnegative(),
+          end: z.number().int().nonnegative(),
+        }),
+      )
+      .optional(),
+  }),
   z.object({
     kind: z.literal("card"),
     lines: z.array(z.object({ k: z.string(), v: z.string() })),

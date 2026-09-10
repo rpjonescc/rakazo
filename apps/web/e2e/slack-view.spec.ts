@@ -102,7 +102,7 @@ test("optional Slack workspace preserves navigation, threads, and themes", async
   await page.getByTestId(`slack-thread-${root!.id}`).click();
   await expect(page.getByTestId("slack-thread-panel")).toBeVisible();
   const thread = page.getByTestId("slack-thread-panel");
-  await expect(thread.locator("textarea")).toHaveAttribute("placeholder", "Reply in thread");
+  await expect(thread.locator("textarea")).toHaveAttribute("aria-label", "Reply in thread");
   await expect(thread.getByTestId("reply-parent-preview")).toHaveCount(0);
   await expect(thread.locator(`[data-message-id="${root!.id}"]`)).toHaveCount(1);
   await expect(thread.getByRole("button", { name: "Back to direct message" })).toBeVisible();
@@ -124,7 +124,7 @@ test("optional Slack workspace preserves navigation, threads, and themes", async
     persisted.messages.some(
       (message) =>
         message.threadRootMessageId === root!.id &&
-        message.blocks.some((block) => block.text === "Reply sent from the thread composer"),
+        message.blocks.some((block) => block.text?.endsWith("Reply sent from the thread composer")),
     ),
   ).toBe(true);
 
