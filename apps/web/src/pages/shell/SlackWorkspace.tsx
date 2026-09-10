@@ -1,4 +1,5 @@
 import "./slack-workspace.css";
+import { useLingui } from "@lingui/react/macro";
 import type { Bot, Group, ThreadSnapshot } from "@rakazo/contracts";
 import { BotAvatar, GroupAvatar } from "@rakazo/ui-web";
 import {
@@ -73,6 +74,7 @@ export function SlackWorkspace({
   threadFocusMode = "back",
   onCloseThread,
 }: Props) {
+  const { t } = useLingui();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [dark, setDark] = useState(() => document.documentElement.dataset.theme === "dark");
   const threadCloseRef = useRef(onCloseThread);
@@ -430,8 +432,8 @@ export function SlackWorkspace({
               ref={threadBackRef}
               type="button"
               data-testid="slack-thread-back"
-              aria-label={activeGroup ? "Back to channel" : "Back to direct message"}
-              title={activeGroup ? "Back to channel" : "Back to direct message"}
+              aria-label={activeGroup ? t`Back to channel` : t`Back to direct message`}
+              title={activeGroup ? t`Back to channel` : t`Back to direct message`}
               onClick={closeThread}
               className="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
             >

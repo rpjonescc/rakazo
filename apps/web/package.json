@@ -10,6 +10,7 @@
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --root ../.. apps/web/src",
     "e2e": "playwright test",
+    "test:production": "pnpm build && node scripts/thread-first-production.mjs",
     "intl:extract": "lingui extract --clean",
     "intl:compile": "lingui compile"
   },

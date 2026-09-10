@@ -3768,3 +3768,105 @@ msgstr "Agents ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
 
 msgid "You (included)"
 msgstr "You (included)"
+
+#: src/pages/Shell.tsx:2164
+msgid "Message sent. History refresh failed; retry to reconcile."
+msgstr "Message sent. History refresh failed; retry to reconcile."
+
+#: src/pages/Shell.tsx:2248
+msgid "This failed root has no text to retry"
+msgstr "This failed root has no text to retry"
+
+#: src/pages/Shell.tsx:2257
+msgid "Retry details are unavailable for this failed root"
+msgstr "Retry details are unavailable for this failed root"
+
+#: src/pages/Shell.tsx:2811
+msgid "No agents yet"
+msgstr "No agents yet"
+
+#: src/pages/Shell.tsx:2839
+msgid "Start a conversation"
+msgstr "Start a conversation"
+
+#: src/pages/Shell.tsx:2892
+msgid "Reply in thread"
+msgstr "Reply in thread"
+
+#: src/pages/Shell.tsx:4683
+msgid "Back to original message"
+msgstr "Back to original message"
+
+#: src/pages/Shell.tsx:4937
+msgid "Run failed"
+msgstr "Run failed"
+
+#: src/pages/Shell.tsx:4947
+msgid "Working"
+msgstr "Working"
+
+#: src/pages/Shell.tsx:4949
+msgid "Waiting for your input"
+msgstr "Waiting for your input"
+
+#: src/pages/Shell.tsx:4951
+msgid "Waiting for takeover"
+msgstr "Waiting for takeover"
+
+#: src/pages/Shell.tsx:4957
+msgid "Completed"
+msgstr "Completed"
+
+#: src/pages/Shell.tsx:4959
+msgid "Stopped"
+msgstr "Stopped"
+
+#: src/pages/Shell.tsx:4961
+msgid "Mixed activity"
+msgstr "Mixed activity"
+
+#: src/pages/Shell.tsx:4963
+msgid "No run yet"
+msgstr "No run yet"
+
+#: src/pages/Shell.tsx:5003
+msgid "Agents"
+msgstr "Agents"
+
+#: src/pages/Shell.tsx:5004
+msgid "No agent run"
+msgstr "No agent run"
+
+#: src/pages/Shell.tsx:5006
+msgid "{replyCount, plural, one {# reply} other {# replies}}"
+msgstr "{replyCount, plural, one {# reply} other {# replies}}"
+
+#: src/pages/Shell.tsx:5045
+msgid "Failure: {failure}"
+msgstr "Failure: {failure}"
+
+#: src/pages/Shell.tsx:5052
+msgid "Stop root {0}"
+msgstr "Stop root {0}"
+
+#: src/pages/Shell.tsx:5057
+msgid "Stop this root"
+msgstr "Stop this root"
+
+#: src/pages/Shell.tsx:5064
+msgid "Retry root {0}"
+msgstr "Retry root {0}"
+
+#: src/pages/Shell.tsx:5069
+msgid "Retry in thread"
+msgstr "Retry in thread"
+
+#: src/pages/shell/SlackWorkspace.tsx:435
+#: src/pages/shell/SlackWorkspace.tsx:436
+msgid "Back to channel"
+msgstr "Back to channel"
+
+#: src/pages/shell/SlackWorkspace.tsx:435
+#: src/pages/shell/SlackWorkspace.tsx:436
+msgid "Back to direct message"
+msgstr "Back to direct message"

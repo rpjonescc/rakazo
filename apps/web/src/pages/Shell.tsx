@@ -1,5 +1,5 @@
 import { i18n } from "@lingui/core";
-import { t } from "@lingui/core/macro";
+import { plural, t } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
 import { ChatMarkdown } from "@rakazo/chat-ui/web";
 import type {
@@ -4934,7 +4934,7 @@ function rootSummaryHasActiveRun(summary: ThreadRootSummary | undefined): boolea
 function rootSummaryFailure(summary: ThreadRootSummary | undefined): string | null {
   if (!summary) return null;
   const failedRun = summary.runs.find((run) => run.status === "failed" && run.error);
-  return failedRun?.error ?? (summary.state === "failed" ? "Run failed" : null);
+  return failedRun?.error ?? (summary.state === "failed" ? t`Run failed` : null);
 }
 
 function rootSummaryFailureRunId(summary: ThreadRootSummary | undefined): string | null {
@@ -4944,23 +4944,23 @@ function rootSummaryFailureRunId(summary: ThreadRootSummary | undefined): string
 function rootSummaryStateLabel(state: ThreadRootSummary["state"]): string {
   switch (state) {
     case "running":
-      return "Working";
+      return t`Working`;
     case "waiting_input":
-      return "Waiting for your input";
+      return t`Waiting for your input`;
     case "waiting_takeover":
-      return "Waiting for takeover";
+      return t`Waiting for takeover`;
     case "queued":
-      return "Queued";
+      return t`Queued`;
     case "failed":
-      return "Failed";
+      return t`Failed`;
     case "completed":
-      return "Completed";
+      return t`Completed`;
     case "cancelled":
-      return "Stopped";
+      return t`Stopped`;
     case "mixed":
-      return "Mixed activity";
+      return t`Mixed activity`;
     case "silent":
-      return "No run yet";
+      return t`No run yet`;
   }
 }
 
@@ -4985,6 +4985,7 @@ function RootSummaryView({
   onStopRoot?: () => void | Promise<void>;
   onRetryRoot?: () => void | Promise<void>;
 }) {
+  const { t } = useLingui();
   if (!summary) return null;
   if (
     summary.state === "silent" &&
@@ -4999,9 +5000,10 @@ function RootSummaryView({
   const participantLabel = names.length
     ? names.join(", ")
     : summary.runs.length
-      ? "Agents"
-      : "No agent run";
-  const replyLabel = `${summary.replyCount} ${summary.replyCount === 1 ? "reply" : "replies"}`;
+      ? t`Agents`
+      : t`No agent run`;
+  const replyCount = summary.replyCount;
+  const replyLabel = plural(replyCount, { one: "# reply", other: "# replies" });
   return (
     <div
       data-testid={`slack-root-summary-${summary.rootMessageId}`}
@@ -5040,31 +5042,31 @@ function RootSummaryView({
           data-testid={`slack-root-failure-${summary.rootMessageId}`}
           className="mt-1 break-words text-foreground"
         >
-          Failure: {failure}
+          <Trans>Failure: {failure}</Trans>
         </p>
       ) : null}
       {active && onStopRoot ? (
         <button
           type="button"
           data-testid={`slack-root-stop-${summary.rootMessageId}`}
-          aria-label={`Stop root ${summary.rootMessageId}`}
+          aria-label={t`Stop root ${summary.rootMessageId}`}
           onClick={() => void onStopRoot()}
           className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-md border border-border px-2.5 font-medium text-foreground/75 hover:bg-accent hover:text-foreground"
         >
           <Square size={11} strokeWidth={0} fill="currentColor" />
-          Stop this root
+          <Trans>Stop this root</Trans>
         </button>
       ) : null}
       {!active && failure && onRetryRoot ? (
         <button
           type="button"
           data-testid={`slack-root-retry-${summary.rootMessageId}`}
-          aria-label={`Retry root ${summary.rootMessageId}`}
+          aria-label={t`Retry root ${summary.rootMessageId}`}
           onClick={() => void onRetryRoot()}
           className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-md border border-border px-2.5 font-medium text-foreground/75 hover:bg-accent hover:text-foreground"
         >
           <ArrowUp size={13} strokeWidth={2} />
-          Retry in thread
+          <Trans>Retry in thread</Trans>
         </button>
       ) : null}
     </div>
