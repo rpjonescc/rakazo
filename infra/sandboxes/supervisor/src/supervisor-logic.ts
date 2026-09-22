@@ -96,11 +96,25 @@ function errorText(error: unknown) {
   return `${error.message}${cause}`.toLowerCase();
 }
 
+function errorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string") return code.toLowerCase();
+  const cause = (error as { cause?: unknown }).cause;
+  return cause && cause !== error ? errorCode(cause) : undefined;
+}
+
 /** True when the control service was never reached, so actions were not applied. */
 export function isComputerControlUnavailable(error: unknown) {
   if (error instanceof ComputerControlUnavailableError) return true;
   if (!(error instanceof Error)) return false;
   if (error.name === "TimeoutError" || error.name === "AbortError") return false;
+  // Undici reports a connect timeout as a TimeoutError/TypeError with a
+  // transport code. The request never reached the computer, so replaying via
+  // docker-exec is safe. Keep generic request timeouts non-replayable because
+  // the service may already have applied some actions.
+  const code = errorCode(error);
+  if (code === "etimedout" || code === "und_err_connect_timeout") return true;
   const text = errorText(error);
   // Only pre-connect failures prove no actions ran. Mid-flight resets/hang-ups can
   // happen after the service already applied steps.

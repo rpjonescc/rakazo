@@ -2559,6 +2559,22 @@ export function ShellPage() {
     }
   }, [computer?.busyBotName]);
 
+  // Keep the computer visible while an agent is actively using it. The Slack
+  // thread drawer is an isolated overlay, so relying on the monitor button
+  // leaves computer activity hidden behind the conversation.
+  useEffect(() => {
+    if (
+      presentationMode !== "slack" ||
+      !active ||
+      !computer?.busyBotName ||
+      panel === "computer" ||
+      computerOpen
+    ) {
+      return;
+    }
+    setPanel("computer");
+  }, [active?.id, computer?.busyBotName, computerOpen, panel, presentationMode]);
+
   useEffect(() => {
     if (panel !== "routine") {
       routineSaveRequest.current += 1;
@@ -3649,7 +3665,7 @@ export function ShellPage() {
       <aside
         data-testid="side-panel"
         data-panel={panel ?? "closed"}
-        className={`absolute inset-y-0 end-0 z-20 flex min-h-0 shrink-0 flex-col overflow-hidden bg-background transition-[width] duration-150 ease-out md:relative ${
+        className={`absolute inset-y-0 end-0 ${panel === "computer" ? "z-50" : "z-20"} flex min-h-0 shrink-0 flex-col overflow-hidden bg-background transition-[width] duration-150 ease-out md:relative ${
           panel && (active || activeGroup)
             ? "w-full max-w-[384px] border-s border-sidebar-border md:w-[384px] md:max-w-none"
             : "pointer-events-none w-0"
