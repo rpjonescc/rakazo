@@ -117,19 +117,7 @@ export const lightTokens = {
 } as const satisfies ColorTokens;
 
 /** Chat-view overrides are scoped to the optional web/Electron workspace. */
-export const chatDarkTokens: ColorTokens = {
-  ...darkTokens,
-  background: "#242628",
-  card: "#2B2D30",
-  muted: "#2B2D30",
-  mutedForeground: "#AAAEB3",
-  accent: "#333639",
-  border: "#3B3E42",
-  input: "#3B3E42",
-  sidebar: "#202224",
-  sidebarBorder: "#36393D",
-  sidebarAccent: "#303336",
-};
+export const chatDarkTokens: ColorTokens = darkTokens;
 
 export const chatLightTokens: ColorTokens = {
   ...lightTokens,

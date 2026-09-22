@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  chatDarkTokens,
   type ColorTokens,
   cssVariableName,
   darkTokens,
@@ -66,6 +67,10 @@ describe("appearance preference", () => {
     expect(light.chatUser).not.toBe(light.muted);
     expect(dark.sidebar).not.toBe(dark.background);
     expect(light.sidebar).not.toBe(light.background);
+  });
+
+  it("uses the Classic dark palette for Slack dark mode", () => {
+    expect(chatDarkTokens).toEqual(darkTokens);
   });
 
   it("tolerates a throwing localStorage getter", () => {
