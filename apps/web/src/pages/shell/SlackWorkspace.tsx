@@ -32,6 +32,7 @@ type Props = {
   onCreateGroup: () => void;
   onOpenSettings: () => void;
   onOpenComputer: () => void;
+  computerPanelOpen?: boolean;
   onToggleClassic: () => void;
   onSettings: () => void;
   onSearch: () => void;
@@ -63,6 +64,7 @@ export function SlackWorkspace({
   onCreateGroup,
   onOpenSettings,
   onOpenComputer,
+  computerPanelOpen = false,
   onToggleClassic,
   onSettings,
   onSearch,
@@ -401,10 +403,13 @@ export function SlackWorkspace({
                 type="button"
                 aria-label="Agent computer"
                 title="Agent computer"
+                data-testid="slack-open-computer"
+                data-active={computerPanelOpen ? "true" : "false"}
                 onClick={onOpenComputer}
-                className="app-no-drag grid h-8 w-8 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
+                className="app-no-drag flex h-8 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground data-[active=true]:bg-accent data-[active=true]:text-foreground"
               >
                 <Monitor size={16} strokeWidth={1.7} />
+                <span>Computer</span>
               </button>
             ) : null}
             <button

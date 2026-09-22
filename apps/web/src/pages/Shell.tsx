@@ -2796,6 +2796,7 @@ export function ShellPage() {
           onOpenSettings={() => setPanel(inGroup ? "group-settings" : "settings")}
           onSettings={() => openSettings("general")}
           onSearch={() => setCommandPaletteOpen(true)}
+          computerPanelOpen={panel === "computer" || computerOpen}
           onOpenComputer={() => {
             setPanel(panel === "computer" ? null : "computer");
             if (active) void refreshThread(active.id).catch(() => undefined);
