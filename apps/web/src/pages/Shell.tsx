@@ -451,9 +451,9 @@ export function ShellPage() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [presentationMode, setPresentationMode] = useState<"classic" | "slack">(() => {
     try {
-      return window.localStorage.getItem("rakazo.presentation") === "slack" ? "slack" : "classic";
+      return window.localStorage.getItem("rakazo.presentation") === "classic" ? "classic" : "slack";
     } catch {
-      return "classic";
+      return "slack";
     }
   });
   const [draggedBotId, setDraggedBotId] = useState<string | null>(null);
